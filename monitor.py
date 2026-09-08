@@ -16,8 +16,10 @@ import argparse
 import asyncio
 import json
 import logging
+import random
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +27,22 @@ from telethon import TelegramClient, events, utils
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
 ORDERS_LOG = Path(__file__).with_name("orders.log")
+SENT_LOG = Path(__file__).with_name("sent.log")
+AUTO_STATE = Path(__file__).with_name("auto_state.json")
+
+# Auto-reply text variants (rotation keeps messages from looking copy-pasted,
+# which is what Telegram's spam heuristics and chat admins look for).
+AUTO_TEMPLATES_RU = [
+    "{handle}, здравствуйте! Возьму эту задачу ({quote}). "
+    "Python — скрипты, боты, парсинг, автоматизация. "
+    "Напишите мне в личку: пришлю план и вилку цены, отвечаю быстро.",
+    "{handle}, добрый день! По вашей задаче есть релевантный опыт, "
+    "открытый код: github.com/TToNu/sysmon. "
+    "Пару уточняющих вопросов в личке — и назову сроки и цену, удобно?",
+    "{handle}, готов взяться ({quote}). "
+    "Python-разработчик: утилиты, парсеры, телеграм-боты, автоматизация. "
+    "Детали — в личку, отвечаю в течение получаса.",
+]
 
 log = logging.getLogger("tg-order-watch")
 
@@ -53,6 +71,37 @@ def build_matcher(keywords: list[str]):
 def snippet(text: str, limit: int = 500) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def autoreply_decision(
+    text: str, is_bot: bool, is_broadcast: bool, auto: dict
+) -> str | None:
+    """Return a skip reason when auto-reply must not fire, else None."""
+    if not auto.get("enabled"):
+        return "disabled"
+    low = (text or "").lower()
+    if not low:
+        return "empty text"
+    if is_bot:
+        return "sender is bot"
+    if is_broadcast:
+        return "broadcast channel (replies not possible)"
+    if any(b in low for b in auto.get("exclude", [])):
+        return "excluded"
+    if not any(k in low for k in auto.get("strong_keywords", [])):
+        return "no strong keyword"
+    return None
+
+
+def load_auto_state() -> dict:
+    try:
+        return json.loads(AUTO_STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"day": "", "sent": 0, "chats": {}}
+
+
+def save_auto_state(state: dict) -> None:
+    AUTO_STATE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
 def ask_phone() -> str:
@@ -152,6 +201,56 @@ async def run(cfg: dict, once: bool) -> None:
             "me",
             f"🔥 Заказ? [{title}] @{who} {stamp}\n\n{snippet(event.raw_text)}",
         )
+
+        # --- auto-reply (group chats only, conservative anti-ban limits) ---
+        auto = cfg.get("auto_reply", {})
+        is_bot = getattr(sender, "bot", False)
+        is_broadcast = event.is_channel and not event.is_group
+        reason = autoreply_decision(event.raw_text, is_bot, is_broadcast, auto)
+        if reason:
+            log.info("auto-reply skipped: %s", reason)
+            return
+
+        st = load_auto_state()
+        today = datetime.now().strftime("%Y-%m-%d")
+        if st.get("day") != today:
+            st = {"day": today, "sent": 0, "chats": {}}
+        if st["sent"] >= int(auto.get("daily_limit", 8)):
+            log.info("auto-reply skipped: daily limit reached")
+            return
+        cooldown = int(auto.get("chat_cooldown_min", 10)) * 60
+        if time.time() - st["chats"].get(str(event.chat_id), 0) < cooldown:
+            log.info("auto-reply skipped: chat cooldown")
+            return
+
+        quote = " ".join((event.raw_text or "").split())
+        quote = (quote[:80] + "…") if len(quote) > 80 else quote
+        handle = f"@{who}" if not str(who).startswith("@") else str(who)
+        msg = random.choice(AUTO_TEMPLATES_RU).format(handle=handle, quote=f"«{quote}»")
+        delay = random.uniform(
+            float(auto.get("min_delay_s", 20)), float(auto.get("max_delay_s", 60))
+        )
+        log.info("auto-reply in %s in ~%.0fs", title, delay)
+        await asyncio.sleep(delay)
+        try:
+            await event.reply(msg)
+        except Exception as e:  # noqa: BLE001 - flood waits, muted chats etc.
+            log.warning("auto-reply failed: %s", e)
+            return
+        st["sent"] += 1
+        st["chats"][str(event.chat_id)] = time.time()
+        save_auto_state(st)
+        with SENT_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(
+                {
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "chat": title,
+                    "link": link,
+                    "sent": msg,
+                },
+                ensure_ascii=False,
+            ) + "\n")
+        await client.send_message("me", f"🤖 Авто-отклик отправлен: [{title}] {link}")
 
     if once:
         await client.disconnect()

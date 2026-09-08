@@ -44,5 +44,22 @@
     "scraping",
     "automation",
     "django"
-  ]
+  ],
+  "auto_reply": {
+    "enabled": false,
+    "daily_limit": 8,
+    "chat_cooldown_min": 10,
+    "min_delay_s": 20,
+    "max_delay_s": 60,
+    "strong_keywords": [
+      "нужен скрипт",
+      "нужен бот",
+      "нужен парсер",
+      "кто сделает",
+      "закажу",
+      "need a script",
+      "freela"
+    ],
+    "exclude": ["no rf and rb", "no rf", "не рф", "без рф"]
+  }
 }

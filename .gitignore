@@ -8,3 +8,4 @@ session.session
 test_session.session  
 session.session-journal 
 session.session-* 
+auto_state.json 
