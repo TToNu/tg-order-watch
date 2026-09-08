@@ -4,3 +4,5 @@ config.json
 session.session
 *.log
 .venv/
+session.session  
+test_session.session  
