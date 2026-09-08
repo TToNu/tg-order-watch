@@ -21,9 +21,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, utils
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
+ORDERS_LOG = Path(__file__).with_name("orders.log")
 
 log = logging.getLogger("tg-order-watch")
 
@@ -102,11 +103,16 @@ async def run(cfg: dict, once: bool) -> None:
     matches = build_matcher(cfg["keywords"])
 
     # Resolve chat identifiers (usernames, t.me links, or numeric ids) once.
+    # Key by the marked id (e.g. -100…) — that is what event.chat_id carries.
     targets: dict[int, str] = {}
+    usernames: dict[int, str] = {}
     for ref in cfg["chats"]:
         try:
             ent = await client.get_entity(ref)
-            targets[ent.id] = getattr(ent, "title", None) or getattr(ent, "username", str(ref))
+            marked = utils.get_peer_id(ent)
+            targets[marked] = getattr(ent, "title", None) or getattr(ent, "username", str(ref))
+            if getattr(ent, "username", None):
+                usernames[marked] = ent.username
         except Exception as e:  # noqa: BLE001 - keep other chats working
             log.warning("cannot resolve %s: %s", ref, e)
     if not targets:
@@ -124,6 +130,24 @@ async def run(cfg: dict, once: bool) -> None:
         who = getattr(sender, "username", None) or getattr(sender, "first_name", "?")
         stamp = datetime.now().strftime("%H:%M:%S")
         log.info("[%s] match in %s from @%s", stamp, title, who)
+
+        username = usernames.get(event.chat_id)
+        if username:
+            link = f"https://t.me/{username}/{event.id}"
+        else:
+            inner = str(event.chat_id)
+            inner = inner[4:] if inner.startswith("-100") else inner.lstrip("-")
+            link = f"https://t.me/c/{inner}/{event.id}"
+        record = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "chat": title,
+            "who": str(who),
+            "link": link,
+            "text": event.raw_text or "",
+        }
+        with ORDERS_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
         await client.send_message(
             "me",
             f"🔥 Заказ? [{title}] @{who} {stamp}\n\n{snippet(event.raw_text)}",
