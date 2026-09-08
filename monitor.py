@@ -60,9 +60,11 @@ async def run(cfg: dict, once: bool) -> None:
         cfg["api_id"],
         cfg["api_hash"],
     )
-    # Empty "phone" in config -> Telethon asks for it (and the login code)
-    # interactively in the console; the account number never touches any file.
-    await client.start(phone=cfg.get("phone") or None)
+    # Empty "phone" in config -> ask for it in the console on first run
+    # (Telethon then asks for the login code the same way). The account
+    # number never touches any file.
+    phone = cfg.get("phone") or (lambda: input("Введите номер телефона (+7...): ").strip())
+    await client.start(phone=phone)
     me = await client.get_me()
     log.info("logged in as %s", me.first_name)
 
