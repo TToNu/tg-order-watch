@@ -5,6 +5,7 @@ Uses the same session + MTProto proxy as monitor.py, so no new login.
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from telethon import TelegramClient
@@ -13,7 +14,7 @@ from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermedia
 BASE = Path(__file__).resolve().parent.parent
 CFG = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
 
-CHATS = ["remotejobss", "itfreelancers", "vagaumdev"]
+CHATS = sys.argv[1:] or ["remotejobss", "itfreelancers", "vagaumdev"]
 
 
 async def main() -> None:
