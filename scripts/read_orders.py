@@ -13,8 +13,10 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 LOG = BASE / "orders.log"
 SENT = BASE / "sent.log"
+QUESTIONS = BASE / "questions.log"
 STATE_ORDERS = Path(__file__).with_name(".orders_read")
 STATE_SENT = Path(__file__).with_name(".sent_read")
+STATE_QUESTIONS = Path(__file__).with_name(".questions_read")
 
 
 def new_lines(path: Path, state: Path) -> list[str]:
@@ -36,6 +38,7 @@ def parse(line: str) -> dict | None:
 def main() -> int:
     orders = [rec for ln in new_lines(LOG, STATE_ORDERS) if (rec := parse(ln))]
     sent = [rec for ln in new_lines(SENT, STATE_SENT) if (rec := parse(ln))]
+    questions = [rec for ln in new_lines(QUESTIONS, STATE_QUESTIONS) if (rec := parse(ln))]
 
     if orders:
         print(f"### NEW ORDERS ({len(orders)})")
@@ -50,14 +53,26 @@ def main() -> int:
 
     if sent:
         print()
-        print(f"### AUTO-REPLIES SENT SINCE LAST CHECK ({len(sent)})")
+        print(f"### SENT SINCE LAST CHECK ({len(sent)})")
         for rec in sent:
             print("=" * 60)
-            print(f"[{rec['ts']}] {rec['chat']}")
-            print(f"order: {rec['link']}")
+            print(f"[{rec['ts']}] kind={rec.get('kind', 'autoreply')} {rec['chat']}")
+            print(f"link: {rec.get('link', '')}")
             print(f"we sent: {rec['sent']}")
     else:
-        print("### no new auto-replies")
+        print("### nothing new sent")
+
+    if questions:
+        print()
+        print(f"### NEW QUESTIONS in activity chats ({len(questions)})")
+        for rec in questions:
+            who = rec["who"].lstrip("@")
+            print("=" * 60)
+            print(f"[{rec['ts']}] {rec['chat']} — from @{who}")
+            print(f"link: {rec['link']}")
+            print(rec["text"][:800])
+    else:
+        print("### no new questions")
     return 0
 
 

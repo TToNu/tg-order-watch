@@ -9,3 +9,9 @@ test_session.session
 session.session-journal 
 session.session-* 
 auto_state.json 
+scripts/dialogs.json 
+scripts/answer.txt 
+scripts/._*_read 
+scripts/.orders_read 
+scripts/.sent_read 
+scripts/.questions_read 

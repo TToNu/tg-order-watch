@@ -27,6 +27,7 @@ from telethon import TelegramClient, events, utils
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
 ORDERS_LOG = Path(__file__).with_name("orders.log")
+QUESTIONS_LOG = Path(__file__).with_name("questions.log")
 SENT_LOG = Path(__file__).with_name("sent.log")
 AUTO_STATE = Path(__file__).with_name("auto_state.json")
 
@@ -71,6 +72,15 @@ def build_matcher(keywords: list[str]):
 def snippet(text: str, limit: int = 500) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def msg_link(chat_id: int, msg_id: int, usernames: dict[int, str]) -> str:
+    username = usernames.get(chat_id)
+    if username:
+        return f"https://t.me/{username}/{msg_id}"
+    inner = str(chat_id)
+    inner = inner[4:] if inner.startswith("-100") else inner.lstrip("-")
+    return f"https://t.me/c/{inner}/{msg_id}"
 
 
 def autoreply_decision(
@@ -168,11 +178,44 @@ async def run(cfg: dict, once: bool) -> None:
         sys.exit("no monitored chats resolved — check the 'chats' list in config.json")
     log.info("monitoring %d chats: %s", len(targets), ", ".join(targets.values()))
 
-    @client.on(events.NewMessage(chats=list(targets)))
+    # Activity chats: same watcher, but questions go to questions.log for the
+    # scheduled assistant to answer — this builds presence without spam.
+    act = cfg.get("activity", {})
+    act_targets: dict[int, str] = {}
+    for ref in act.get("chats", []):
+        try:
+            ent = await client.get_entity(ref)
+            marked = utils.get_peer_id(ent)
+            act_targets[marked] = getattr(ent, "title", None) or str(ref)
+            if getattr(ent, "username", None):
+                usernames[marked] = ent.username
+        except Exception as e:  # noqa: BLE001
+            log.warning("cannot resolve activity chat %s: %s", ref, e)
+    act_matches = build_matcher(act.get("keywords", []))
+    log.info("activity chats (%d): %s", len(act_targets), ", ".join(act_targets.values()))
+
+    watch_ids = list(targets) + [c for c in act_targets if c not in targets]
+
+    @client.on(events.NewMessage(chats=watch_ids))
     async def on_message(event: events.NewMessage.Event) -> None:
         if event.out:
             return
         if not matches(event.raw_text):
+            if event.chat_id in act_targets and act_matches(event.raw_text):
+                sender = await event.get_sender()
+                who = getattr(sender, "username", None) or getattr(sender, "first_name", "?")
+                if getattr(sender, "bot", False):
+                    return
+                record = {
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "chat": act_targets[event.chat_id],
+                    "who": str(who),
+                    "link": msg_link(event.chat_id, event.id, usernames),
+                    "text": event.raw_text or "",
+                }
+                with QUESTIONS_LOG.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                log.info("question in %s from @%s", act_targets[event.chat_id], who)
             return
         title = targets.get(event.chat_id, str(event.chat_id))
         sender = await event.get_sender()
@@ -180,13 +223,7 @@ async def run(cfg: dict, once: bool) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
         log.info("[%s] match in %s from @%s", stamp, title, who)
 
-        username = usernames.get(event.chat_id)
-        if username:
-            link = f"https://t.me/{username}/{event.id}"
-        else:
-            inner = str(event.chat_id)
-            inner = inner[4:] if inner.startswith("-100") else inner.lstrip("-")
-            link = f"https://t.me/c/{inner}/{event.id}"
+        link = msg_link(event.chat_id, event.id, usernames)
         record = {
             "ts": datetime.now().isoformat(timespec="seconds"),
             "chat": title,
