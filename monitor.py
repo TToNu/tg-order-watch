@@ -64,8 +64,8 @@ async def run(cfg: dict, once: bool) -> None:
         proxy=(proxy.get("type", "socks5"), proxy["host"], int(proxy["port"])) if proxy else None,
     )
     # Some ISPs block individual Telegram DCs (e.g. only DC2). Config "dc"
-    # pins a reachable one for the very first login; once the session exists
-    # Telegram routes itself. Ignore for already-authorized sessions.
+    # pins a reachable one for the first login; applied only when there is
+    # no stored session yet (delete session.session to re-pin).
     dc = cfg.get("dc")
     if dc and not session_path.with_suffix(".session").exists():
         client.session.set_dc(dc["id"], dc["ip"], dc.get("port", 443))
