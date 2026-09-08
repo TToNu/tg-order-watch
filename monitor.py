@@ -57,17 +57,29 @@ def snippet(text: str, limit: int = 500) -> str:
 async def run(cfg: dict, once: bool) -> None:
     session_path = Path(__file__).with_name("session")
     proxy = cfg.get("proxy")
+    proxy_arg = None
+    connection = None
+    if proxy and proxy.get("proto") == "mtproto":
+        # MTProto proxy tunnels the whole Telegram traffic through the proxy
+        # host; ISP-level blocks of Telegram DC IPs stop mattering.
+        from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermediate
+
+        connection = ConnectionTcpMTProxyRandomizedIntermediate
+        proxy_arg = (proxy["host"], int(proxy["port"]), proxy["secret"])
+    elif proxy:
+        # Plain SOCKS5/HTTP proxy (requires python-socks).
+        proxy_arg = (proxy.get("type", "socks5"), proxy["host"], int(proxy["port"]))
+
     client = TelegramClient(
         str(session_path),
         cfg["api_id"],
         cfg["api_hash"],
-        proxy=(proxy.get("type", "socks5"), proxy["host"], int(proxy["port"])) if proxy else None,
+        connection=connection,
+        proxy=proxy_arg,
     )
-    # Some ISPs block individual Telegram DCs (e.g. only DC2). Config "dc"
-    # pins a reachable one for the first login; applied only when there is
-    # no stored session yet (delete session.session to re-pin).
+    # Pin a specific DC for fresh sessions when no proxy is configured.
     dc = cfg.get("dc")
-    if dc and not session_path.with_suffix(".session").exists():
+    if dc and not proxy and not session_path.with_suffix(".session").exists():
         client.session.set_dc(dc["id"], dc["ip"], dc.get("port", 443))
     # Empty "phone" in config -> ask for it in the console on first run
     # (Telethon then asks for the login code the same way). The account
