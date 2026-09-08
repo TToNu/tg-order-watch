@@ -54,6 +54,17 @@ def snippet(text: str, limit: int = 500) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def ask_phone() -> str:
+    """Ask for the phone and normalize to international +<digits> format."""
+    raw = input("Введите номер телефона (например +79133075862): ").strip()
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 10:  # typed without a country code (RU default)
+        digits = "7" + digits
+    elif len(digits) == 11 and digits.startswith("8"):  # 8-xxx Russian style
+        digits = "7" + digits[1:]
+    return f"+{digits}"
+
+
 async def run(cfg: dict, once: bool) -> None:
     session_path = Path(__file__).with_name("session")
     proxy = cfg.get("proxy")
@@ -81,10 +92,9 @@ async def run(cfg: dict, once: bool) -> None:
     dc = cfg.get("dc")
     if dc and not proxy and not session_path.with_suffix(".session").exists():
         client.session.set_dc(dc["id"], dc["ip"], dc.get("port", 443))
-    # Empty "phone" in config -> ask for it in the console on first run
-    # (Telethon then asks for the login code the same way). The account
-    # number never touches any file.
-    phone = cfg.get("phone") or (lambda: input("Введите номер телефона (+7...): ").strip())
+    # Empty "phone" in config -> ask in the console on first run and accept
+    # both +7... and bare 10-digit input; the login code is asked the same way.
+    phone = cfg.get("phone") or ask_phone
     await client.start(phone=phone)
     me = await client.get_me()
     log.info("logged in as %s", me.first_name)
