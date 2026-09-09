@@ -33,7 +33,6 @@ MAX_BUY_PRICE = 130         # absolute ceiling (balance-bound anyway)
 MIN_MARGIN = 40             # listing target minus buy price
 MARGIN_RATIO = 1.5          # sell price must be >= 1.5x the buy price
 FEE_BUFFER = 5              # marketplace fee / repricing safety
-DAILY_BUY_LIMIT = 5
 BALANCE_FLOOR = 5           # keep at least this much on the balance
 RESELL_CATEGORY = 12        # Epic Games
 PRICE_DUMP_EVERY = 30       # cycles between full price snapshots (~10 min)
@@ -62,7 +61,11 @@ def log(line: str) -> None:
         fh.write(f"{stamp} {line}\n")
 
 
-def notify(text: str) -> None:
+def notify(text: str, important: bool = True) -> None:
+    """Telegram alert. Routine steps (buy attempts, discount asks, relists)
+    are log-only; important = sales, first-flip report, problems."""
+    if not important:
+        return
     deadline = time.time() + 30
     while CMDS.exists() and time.time() < deadline:
         time.sleep(1)
@@ -196,8 +199,6 @@ def try_discount(it: dict, st: dict, game: str, target: float) -> None:
     save_state(st)
     log(f"[discount] requested {it['item_id']} [{game}]: "
         f"{it.get('price')}₽ -> {offered:.0f}₽ (auto-buy on)")
-    notify(f"🔵 Запросил скидку: {it['item_id']} [{game}] "
-           f"{it.get('price')}₽ → {offered:.0f}₽. При согласии купится сам.")
 
 
 def check_pending_discounts(st: dict) -> None:
@@ -219,8 +220,6 @@ def check_pending_discounts(st: dict) -> None:
         if login.get("login"):  # we own it now (buyer sees credentials)
             log(f"[discount] ACCEPTED & bought {iid} [{row['game']}] "
                 f"за {row['requested']}₽")
-            notify(f"🟢 Скидка принята, куплено: {iid} [{row['game']}] "
-                   f"за {row['requested']}₽")
             ok, info = relist({"item": item}, row["requested"], row["game"])
             if ok:
                 st["spent"] += row["requested"]
@@ -230,8 +229,6 @@ def check_pending_discounts(st: dict) -> None:
                     "game": row["game"], "link": info.split(" ")[0],
                     "ts": row["ts"]})
                 log(f"[sell] OK {iid} -> {info}")
-                notify(f"✅ Флип [{row['game']}]: купил за "
-                       f"{row['requested']}₽, выставил {info}")
             else:
                 notify(f"🟠 Купил {iid} со скидкой, перевыкладка не вышла: "
                        f"{info}")
@@ -339,9 +336,6 @@ def relist(bought: dict, buy_price: float, game: str) -> tuple[bool, str]:
 
 
 def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
-    if st["bought"] >= DAILY_BUY_LIMIT:
-        log("[guard] daily buy limit reached")
-        return
     price = float(it.get("price", 999))
     floor, target, med = resale_stats(game)
     cap = max_payable(target)
@@ -358,8 +352,6 @@ def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
 
     log(f"[buy] ATTEMPT {it['item_id']} [{game}] price={price} "
         f"evidence={ev}")
-    notify(f"🟡 Покупаю [{game}] лот {it['item_id']} за {price}₽ "
-           f"(перепродажа ~{target:.0f}₽)")
     bought = fast_buy(it["item_id"], price)
     if not bought:
         notify(f"❌ Покупка {it['item_id']} [{game}] не прошла")
@@ -378,8 +370,7 @@ def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
             "ts": datetime.now().isoformat(timespec="seconds"),
         })
         save_state(st)
-        notify(f"✅ Флип [{game}]: купил {it['item_id']} за {price}₽, "
-               f"выставил {info}")
+        log(f"[sell] OK {it['item_id']} [{game}] -> {info}")
     else:
         log(f"[sell] FAIL {it['item_id']}: {info}")
         notify(f"🟠 Купил {it['item_id']} [{game}] за {price}₽, но "
@@ -412,10 +403,14 @@ def check_my_listings(st: dict) -> None:
             st["earned"] += sold_for
             log(f"[sold] {iid}: bought {row['bought']}₽ -> sold "
                 f"{sold_for or '?'}₽ (profit {profit if profit is not None else '?'})")
-            notify(f"💰 Продано: {row.get('link') or iid} — "
+            banner = ""
+            if not st.get("first_flip_reported"):
+                st["first_flip_reported"] = True
+                banner = ("🎉 ПЕРВЫЙ ПОЛНЫЙ ЦИКЛ: куплено → продано.\n")
+            notify(f"{banner}💰 Продано: {row.get('link') or iid} [{row.get('game','?')}] — "
                    f"куплено {row['bought']}₽, продано {sold_for or '?'}₽"
                    + (f", профит {profit:.0f}₽" if profit is not None else "")
-                   + ". Реинвестирую.")
+                   + f". Баланс в обороте, продолжаю.")
         else:
             still.append(row)
     if len(still) != len(st["my_listings"]):
