@@ -221,6 +221,7 @@ def main() -> None:
           + ", ".join(f"{a}-{b}₽" for a, b in RANGES)
           + f" | max_buy {MAX_BUY_PRICE}₽ | margin ≥{MIN_MARGIN}₽ | "
             f"daily cap {DAILY_BUY_LIMIT}", flush=True)
+    from lzt_prices import dump as price_dump
     seen = load_seen()
     st = load_state()
     n = 0
@@ -228,6 +229,11 @@ def main() -> None:
         n += 1
         try:
             cycle(seen, st)
+            if n % 4 == 0:  # every ~10 minutes: price snapshot for stats
+                try:
+                    price_dump()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[prices] {type(e).__name__}: {e}", flush=True)
             print(f"[cycle {n}] {datetime.now():%H:%M:%S} "
                   f"seen={len(seen)} bought_today={st['bought']}", flush=True)
         except Exception as e:  # noqa: BLE001 - never die
