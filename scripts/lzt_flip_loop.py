@@ -26,11 +26,11 @@ STATE = BASE / ".flip_state.json"
 CMDS = BASE / "cmds.json"
 CMDS_RESULT = BASE / "cmds.result.json"
 
-RANGES = [("1", "25"), ("25", "60")]
-PAGES_PER_RANGE = 3
-CYCLE_SECONDS = 150
-MAX_BUY_PRICE = 45          # never buy above this
-MIN_MARGIN = 40             # resale floor minus buy price
+RANGES = [("1", "25"), ("25", "60"), ("60", "75")]
+PAGES_PER_RANGE = 2
+CYCLE_SECONDS = 75
+MAX_BUY_PRICE = 60          # never buy above this
+MIN_MARGIN = 40             # listing target minus buy price
 DAILY_BUY_LIMIT = 5
 BALANCE_FLOOR = 5           # keep at least this much on the balance
 RESELL_CATEGORY = 12        # Epic Games
@@ -81,15 +81,21 @@ def balance_rub() -> float:
     return float(u.get("balance", 0) or 0)
 
 
-def resale_floor() -> float:
+def resale_stats() -> tuple[float, float]:
+    """(floor, listing target): sell under the cheapest quartile of the
+    market — fast sale without dumping at the floor."""
     res = api_call("GET", "/epicgames",
                    {"title": "dead by daylight", "order_by": "price_to_up"})
-    items = res.get("items", [])
+    items = [it for it in res.get("items", [])
+             if it.get("item_state") == "active"]
     if not items:
-        return 88.0
-    prices = [float(it.get("price", 88)) for it in items[:5]
-              if it.get("item_state") == "active"]
-    return min(prices) if prices else 88.0
+        return 88.0, 95.0
+    prices = sorted(float(it["price"]) for it in items[:40])
+    floor = prices[0]
+    idx = max(0, len(prices) // 4)
+    p25 = prices[idx]
+    target = max(floor - 2, min(p25 - 2, floor + 20))
+    return floor, round(target, 2)
 
 
 def fast_buy(item_id: int, price: float) -> dict | None:
@@ -116,8 +122,8 @@ def relist(bought: dict, buy_price: float) -> tuple[bool, str]:
     login = item.get("loginData") or {}
     email = item.get("emailLoginData") or {}
     cookies = (item.get("extra") or {}).get("cookies") or item.get("cookies")
-    floor = resale_floor()
-    sell_price = max(1.0, round(floor - 2))
+    floor, target = resale_stats()
+    sell_price = max(1.0, target)
     body = {
         "title": "Dead by Daylight",
         "title_en": "Dead by Daylight",
@@ -146,7 +152,7 @@ def relist(bought: dict, buy_price: float) -> tuple[bool, str]:
     except RuntimeError as e:
         return False, str(e)[:300]
     link = res.get("itemLink") or f"https://lzt.market/{res.get('item', {}).get('item_id')}/"
-    return True, f"{link} за {sell_price}₽ (floor {floor})"
+    return True, f"{link} за {sell_price:.0f}₽ (floor {floor:.0f})"
 
 
 def try_buy(it: dict, ev: str, st: dict) -> None:
@@ -157,20 +163,20 @@ def try_buy(it: dict, ev: str, st: dict) -> None:
     if price > MAX_BUY_PRICE:
         log(f"[guard] {it['item_id']} price {price} > {MAX_BUY_PRICE}")
         return
-    floor = resale_floor()
-    if floor - price < MIN_MARGIN:
-        log(f"[guard] {it['item_id']} margin {floor - price:.0f} < {MIN_MARGIN}")
+    floor, target = resale_stats()
+    if target - price < MIN_MARGIN:
+        log(f"[guard] {it['item_id']} margin {target - price:.0f} < {MIN_MARGIN}")
         return
     bal = balance_rub()
     if bal - price < BALANCE_FLOOR:
         log(f"[guard] balance {bal} too low for price {price}")
         notify(f"⚠️ Баланс {bal}₽ — не хватает на лот {it['item_id']} "
-               f"за {price}₽. Пополни баланс.")
+               f"за {price}₽. Жду продажи своих лотов.")
         return
 
     log(f"[buy] ATTEMPT {it['item_id']} price={price} evidence={ev}")
     notify(f"🟡 Покупаю DBD-лот {it['item_id']} за {price}₽ "
-           f"(перепродажа ~{floor:.0f}₽)")
+           f"(перепродажа ~{target:.0f}₽)")
     bought = fast_buy(it["item_id"], price)
     if not bought:
         notify(f"❌ Покупка {it['item_id']} не прошла (уплыл или ошибка)")
