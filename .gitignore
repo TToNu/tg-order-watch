@@ -15,3 +15,7 @@ scripts/._*_read
 scripts/.orders_read 
 scripts/.sent_read 
 scripts/.questions_read 
+session.helper 
+dolphin_token.json
+scripts/lzt_token.json 
+scripts/dolphin_token.json 
