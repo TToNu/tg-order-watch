@@ -31,6 +31,7 @@ PAGES_PER_RANGE = 2
 CYCLE_SECONDS = 15
 MAX_BUY_PRICE = 130         # absolute ceiling (balance-bound anyway)
 MIN_MARGIN = 40             # listing target minus buy price
+MARGIN_RATIO = 1.5          # sell price must be >= 1.5x the buy price
 FEE_BUFFER = 5              # marketplace fee / repricing safety
 DAILY_BUY_LIMIT = 5
 BALANCE_FLOOR = 5           # keep at least this much on the balance
@@ -157,6 +158,14 @@ def hour_discount_budget(st: dict) -> bool:
     return st["discounts_sent_hour"] < DISCOUNTS_PER_HOUR
 
 
+def max_payable(target: float) -> float:
+    """Highest buy price that keeps both >= MIN_MARGIN profit and >= 1.5x ROI."""
+    if target <= 0:
+        return 0.0
+    return round(min(target - MIN_MARGIN - FEE_BUFFER,
+                     target / MARGIN_RATIO, MAX_BUY_PRICE), 2)
+
+
 def try_discount(it: dict, st: dict, game: str, target: float) -> None:
     """Ask the seller for a price we can profit from; auto-buy on accept."""
     if not it.get("allow_ask_discount"):
@@ -167,7 +176,7 @@ def try_discount(it: dict, st: dict, game: str, target: float) -> None:
         return
     if not hour_discount_budget(st):
         return
-    offered = max(1.0, round(target - MIN_MARGIN - FEE_BUFFER))
+    offered = max(1.0, max_payable(target))
     if offered < it.get("price", 0) * 0.4:
         return  # unrealistic ask: seller would need a >60% cut
     try:
@@ -261,7 +270,7 @@ def deep_sweep(seen: set, st: dict) -> None:
             game, ev = hit
             price = float(it.get("price", 999))
             floor, target, med = resale_stats(game)
-            cap = min(target - MIN_MARGIN - FEE_BUFFER, MAX_BUY_PRICE)
+            cap = max_payable(target)
             if target <= 0:
                 continue
             found += 1
@@ -345,8 +354,7 @@ def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
         return
     price = float(it.get("price", 999))
     floor, target, med = resale_stats(game)
-    # dynamic cap: pay at most target minus margin minus fee buffer
-    cap = min(target - MIN_MARGIN - FEE_BUFFER, MAX_BUY_PRICE)
+    cap = max_payable(target)
     if price > cap:
         log(f"[guard] {it['item_id']} [{game}] price {price:.0f} > "
             f"cap {cap:.0f} (target {target:.0f})")
@@ -474,8 +482,7 @@ def cycle(seen: set, st: dict) -> None:
             log(f"[find] https://lzt.market/{iid}/ "
                 f"{it.get('price')}₽ [{game}] :: {ev}")
             floor, target, med = resale_stats(game)
-            if target > 0 and float(it.get("price", 999)) <= min(
-                    target - MIN_MARGIN - FEE_BUFFER, MAX_BUY_PRICE):
+            if target > 0 and float(it.get("price", 999)) <= max_payable(target):
                 try_buy(it, ev, st, game)
             else:
                 try_discount(it, st, game, target or 1)
