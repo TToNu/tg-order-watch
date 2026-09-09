@@ -29,8 +29,9 @@ CMDS_RESULT = BASE / "cmds.result.json"
 RANGES = [("1", "25"), ("25", "60"), ("60", "75")]
 PAGES_PER_RANGE = 2
 CYCLE_SECONDS = 15
-MAX_BUY_PRICE = 60          # never buy above this
+MAX_BUY_PRICE = 130         # absolute ceiling (balance-bound anyway)
 MIN_MARGIN = 40             # listing target minus buy price
+FEE_BUFFER = 5              # marketplace fee / repricing safety
 DAILY_BUY_LIMIT = 5
 BALANCE_FLOOR = 5           # keep at least this much on the balance
 RESELL_CATEGORY = 12        # Epic Games
@@ -204,13 +205,12 @@ def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
         log("[guard] daily buy limit reached")
         return
     price = float(it.get("price", 999))
-    if price > MAX_BUY_PRICE:
-        log(f"[guard] {it['item_id']} price {price} > {MAX_BUY_PRICE}")
-        return
     floor, target, med = resale_stats(game)
-    if target - price < MIN_MARGIN:
-        log(f"[guard] {it['item_id']} [{game}] margin "
-            f"{target - price:.0f} < {MIN_MARGIN}")
+    # dynamic cap: pay at most target minus margin minus fee buffer
+    cap = min(target - MIN_MARGIN - FEE_BUFFER, MAX_BUY_PRICE)
+    if price > cap:
+        log(f"[guard] {it['item_id']} [{game}] price {price:.0f} > "
+            f"cap {cap:.0f} (target {target:.0f})")
         return
     bal = balance_rub()
     if bal - price < BALANCE_FLOOR:
