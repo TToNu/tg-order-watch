@@ -313,10 +313,17 @@ async def run(cfg: dict, once: bool) -> None:
         with ORDERS_LOG.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-        await client.send_message(
-            "me",
-            f"🔥 Заказ? [{title}] @{who} {stamp}\n\n{snippet(event.raw_text)}",
-        )
+        # Instant 🔥 notification only for strong order signals; broad keyword
+        # matches (news posts, channel chatter) just land in orders.log for
+        # the hourly assistant review — keeps Saved Messages clean.
+        strong = cfg.get("auto_reply", {}).get("strong_keywords", [])
+        if not strong or any(k in low for k in strong):
+            await client.send_message(
+                "me",
+                f"🔥 Заказ? [{title}] @{who} {stamp}\n\n{snippet(event.raw_text)}",
+            )
+        else:
+            log.info("broad match only, no saved-messages ping: %s", title)
 
         # --- auto-reply (group chats only, conservative anti-ban limits) ---
         auto = cfg.get("auto_reply", {})
