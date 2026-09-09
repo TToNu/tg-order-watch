@@ -39,7 +39,8 @@ RESELL_CATEGORY = 12        # Epic Games
 def load_state() -> dict:
     if STATE.exists():
         return json.loads(STATE.read_text(encoding="utf-8"))
-    return {"day": "", "bought": 0, "bought_ids": []}
+    return {"day": "", "bought": 0, "bought_ids": [],
+            "my_listings": [], "spent": 0.0, "earned": 0.0}
 
 
 def save_state(st: dict) -> None:
@@ -181,12 +182,79 @@ def try_buy(it: dict, ev: str, st: dict) -> None:
     ok, info = relist(bought, price)
     if ok:
         log(f"[sell] OK {it['item_id']} -> {info}")
+        st["spent"] += price
+        st["my_listings"].append({
+            "item_id": it["item_id"], "bought": price,
+            "link": info.split(" ")[0] if info else "",
+            "ts": datetime.now().isoformat(timespec="seconds"),
+        })
+        save_state(st)
         notify(f"✅ Флип: купил {it['item_id']} за {price}₽, "
                f"выставил {info}")
     else:
         log(f"[sell] FAIL {it['item_id']}: {info}")
         notify(f"🟠 Купил {it['item_id']} за {price}₽, но перевыкладка не "
                f"вышла: {info}. Нужно вручную.")
+
+
+def check_my_listings(st: dict) -> None:
+    """Track our relisted lots; on sale — log profit, sweep the money
+    from the sale balance to the purchase balance (snowball mode)."""
+    if not st.get("my_listings"):
+        return
+    still = []
+    for row in st["my_listings"]:
+        iid = row["item_id"]
+        try:
+            res = api_call("GET", f"/{iid}")
+            item = res.get("item", res)
+            state_now = item.get("item_state")
+            buyer = item.get("buyer")
+        except RuntimeError as e:
+            if "404" in str(e):
+                state_now, buyer = "gone", "unknown"
+            else:
+                still.append(row)
+                continue
+        if state_now in ("sold", "gone") or (buyer and buyer.get("user_id")
+                                             != 10297413):
+            sold_for = float(item.get("price") or 0) if isinstance(item, dict) else 0
+            profit = sold_for - row["bought"] if sold_for else None
+            st["earned"] += sold_for
+            log(f"[sold] {iid}: bought {row['bought']}₽ -> sold "
+                f"{sold_for or '?'}₽ (profit {profit if profit is not None else '?'})")
+            notify(f"💰 Продано: {row.get('link') or iid} — "
+                   f"куплено {row['bought']}₽, продано {sold_for or '?'}₽"
+                   + (f", профит {profit:.0f}₽" if profit is not None else "")
+                   + ". Реинвестирую.")
+        else:
+            still.append(row)
+    if len(still) != len(st["my_listings"]):
+        st["my_listings"] = still
+        save_state(st)
+        sweep_balances()
+
+
+def sweep_balances() -> None:
+    """Move sale proceeds to the purchase balance so the flipper can reinvest."""
+    try:
+        res = api_call("GET", "/payments/balance/list")
+        balances = res if isinstance(res, list) else res.get("balances", res.get("data", []))
+        src = next((b for b in balances if b.get("type") != "account"
+                    and float(b.get("balance", 0) or 0) > 0), None)
+        dst = next((b for b in balances if b.get("type") == "account"), None)
+        if not src or not dst or float(src.get("balance", 0)) <= 0:
+            return
+        amount = float(src["balance"])
+        body = {"balance_id": src.get("balance_id"),
+                "exchange_balance_id": dst.get("balance_id"),
+                "amount": amount}
+        api_call("POST", "/payments/balance/exchange", data=body)
+        log(f"[exchange] moved {amount}₽ {src.get('title')} -> "
+            f"{dst.get('title')}")
+    except Exception as e:  # noqa: BLE001
+        log(f"[exchange] failed: {type(e).__name__}: {str(e)[:150]} — "
+            f"переведи выручку на баланс покупок вручную")
 
 
 def cycle(seen: set, st: dict) -> None:
@@ -229,13 +297,18 @@ def main() -> None:
         n += 1
         try:
             cycle(seen, st)
+            check_my_listings(st)
             if n % 4 == 0:  # every ~10 minutes: price snapshot for stats
                 try:
                     price_dump()
                 except Exception as e:  # noqa: BLE001
                     print(f"[prices] {type(e).__name__}: {e}", flush=True)
             print(f"[cycle {n}] {datetime.now():%H:%M:%S} "
-                  f"seen={len(seen)} bought_today={st['bought']}", flush=True)
+                  f"seen={len(seen)} bought_today={st['bought']} "
+                  f"spent={st.get('spent', 0):.0f}₽ "
+                  f"earned={st.get('earned', 0):.0f}₽ "
+                  f"active_listings={len(st.get('my_listings', []))}",
+                  flush=True)
         except Exception as e:  # noqa: BLE001 - never die
             print(f"[cycle {n}] error: {type(e).__name__}: {e}", flush=True)
         save_seen(seen)
