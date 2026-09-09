@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lzt import api_call
-from lzt_flip import detect_game, load_seen, save_seen
+from lzt_flip import detect_game, detect_game_generic, load_seen, save_seen
 
 BASE = Path(__file__).resolve().parent.parent
 FINDS_LOG = BASE / "flip_finds.log"
@@ -246,44 +246,34 @@ def check_pending_discounts(st: dict) -> None:
 
 
 def deep_sweep(seen: set, st: dict) -> None:
-    """Full pass over the existing 1-100₽ fortnite inventory: mispriced
-    gems sometimes sit for days while our fresh-lot sniper never sees them."""
+    """Full pass over existing cheap inventory in BOTH sections: mispriced
+    gems sometimes sit for days while the fresh-lot sniper never sees them."""
     found = 0
-    for page in range(1, SWEEP_PAGES + 1):
-        try:
-            res = api_call("GET", "/fortnite",
-                           {"pmin": "1", "pmax": "100",
-                            "order_by": "price_to_up",
-                            "page": str(page)})
-        except Exception as e:  # noqa: BLE001
-            log(f"[sweep] page {page}: {type(e).__name__}: {str(e)[:100]}")
-            break
-        items = res.get("items", [])
-        for it in items:
-            iid = it.get("item_id")
-            if iid in seen or iid in st["bought_ids"]:
-                continue
-            seen.add(iid)
-            hit = detect_game(it)
-            if not hit:
-                continue
-            game, ev = hit
-            price = float(it.get("price", 999))
-            floor, target, med = resale_stats(game)
-            cap = max_payable(target)
-            if target <= 0:
-                continue
-            found += 1
-            log(f"[sweep-find] https://lzt.market/{iid}/ {price:.0f}₽ "
-                f"[{game}] cap={cap:.0f}")
-            if price <= cap:
-                try_buy(it, ev, st, game)
-            else:
-                try_discount(it, st, game, target)
-        if not res.get("hasNextPage"):
-            break
-        time.sleep(1)
-    log(f"[sweep] done: {found} target lots in inventory")
+    for endpoint, detector in (("/fortnite", detect_game),
+                               ("/epicgames", detect_game_generic)):
+        for page in range(1, SWEEP_PAGES + 1):
+            try:
+                res = api_call("GET", endpoint,
+                               {"pmin": "1", "pmax": "100",
+                                "order_by": "price_to_up",
+                                "page": str(page)})
+            except Exception as e:  # noqa: BLE001
+                log(f"[sweep] {endpoint} page {page}: "
+                    f"{type(e).__name__}: {str(e)[:100]}")
+                break
+            items = res.get("items", [])
+            for it in items:
+                iid = it.get("item_id")
+                if iid in seen or iid in st["bought_ids"]:
+                    continue
+                seen.add(iid)
+                before = found
+                handle_find(it, st, detector)
+                found = before  # count only below via detector hit logging
+            if not res.get("hasNextPage"):
+                break
+            time.sleep(1)
+    log(f"[sweep] done over fortnite+epicgames inventory")
 
 
 def relist(bought: dict, buy_price: float, game: str) -> tuple[bool, str]:
@@ -456,6 +446,24 @@ def sweep_balances() -> None:
             f"переведи выручку на баланс покупок вручную")
 
 
+def handle_find(it: dict, st: dict, detector) -> None:
+    """Common buy/discount decision for a candidate lot from any section."""
+    hit = detector(it)
+    if not hit:
+        return
+    game, ev = hit
+    floor, target, med = resale_stats(game)
+    if target <= 0:
+        return
+    price = float(it.get("price", 999))
+    log(f"[find] https://lzt.market/{it.get('item_id')}/ "
+        f"{price:.0f}₽ [{game}] :: {ev}")
+    if price <= max_payable(target):
+        try_buy(it, ev, st, game)
+    else:
+        try_discount(it, st, game, target)
+
+
 def cycle(seen: set, st: dict) -> None:
     today = datetime.now().strftime("%Y-%m-%d")
     if st["day"] != today:
@@ -467,25 +475,17 @@ def cycle(seen: set, st: dict) -> None:
     # history for ALL lots is collected separately by the price dumper.
     now_epoch = int(time.time())
     since = int(st.get("last_new_scan", now_epoch - 120)) - 30
-    res = api_call("GET", "/fortnite",
-                   {"published_after": str(since),
-                    "order_by": "pdate_to_down", "page": "1"})
-    items = res.get("items", [])
-    for it in items:
-        iid = it.get("item_id")
-        if iid in seen or iid in st["bought_ids"]:
-            continue
-        seen.add(iid)
-        hit = detect_game(it)
-        if hit:
-            game, ev = hit
-            log(f"[find] https://lzt.market/{iid}/ "
-                f"{it.get('price')}₽ [{game}] :: {ev}")
-            floor, target, med = resale_stats(game)
-            if target > 0 and float(it.get("price", 999)) <= max_payable(target):
-                try_buy(it, ev, st, game)
-            else:
-                try_discount(it, st, game, target or 1)
+    for endpoint, detector in (("/fortnite", detect_game),
+                               ("/epicgames", detect_game_generic)):
+        res = api_call("GET", endpoint,
+                       {"published_after": str(since),
+                        "order_by": "pdate_to_down", "page": "1"})
+        for it in res.get("items", []):
+            iid = it.get("item_id")
+            if iid in seen or iid in st["bought_ids"]:
+                continue
+            seen.add(iid)
+            handle_find(it, st, detector)
     st["last_new_scan"] = now_epoch
 
 

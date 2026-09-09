@@ -67,6 +67,32 @@ def detect_game(it: dict) -> tuple[str, str] | None:
     return None
 
 
+def detect_game_generic(obj) -> tuple[str, str] | None:
+    """Scan every string in an arbitrary item JSON (epicgames-section lots
+    keep owned-game lists in nested fields) for portfolio games."""
+    texts: list[str] = []
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in ("loginData", "emailLoginData"):
+                    continue  # never regex credentials
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+        elif isinstance(node, str):
+            texts.append(node)
+
+    walk(obj)
+    for game, rx in GAME_TARGETS:
+        for t in texts:
+            m = rx.search(t)
+            if m:
+                return game, f"field: {t[:80]!r}"
+    return None
+
+
 def item_has_dbd(it: dict) -> str | None:  # kept for compatibility
     hit = detect_game(it)
     if hit and hit[0] == "Dead by Daylight":
