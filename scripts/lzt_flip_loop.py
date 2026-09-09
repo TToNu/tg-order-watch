@@ -40,9 +40,14 @@ PRICE_DUMP_EVERY = 30       # cycles between full price snapshots (~10 min)
 
 def load_state() -> dict:
     if STATE.exists():
-        return json.loads(STATE.read_text(encoding="utf-8"))
-    return {"day": "", "bought": 0, "bought_ids": [],
-            "my_listings": [], "spent": 0.0, "earned": 0.0}
+        st = json.loads(STATE.read_text(encoding="utf-8"))
+    else:
+        st = {"day": "", "bought": 0, "bought_ids": [],
+              "my_listings": [], "spent": 0.0, "earned": 0.0}
+    st.setdefault("pending_discounts", [])
+    st.setdefault("discounts_sent_hour", 0)
+    st.setdefault("discounts_hour_ts", 0)
+    return st
 
 
 def save_state(st: dict) -> None:
@@ -136,6 +141,140 @@ def fast_buy(item_id: int, price: float) -> dict | None:
             return None
         return res
     return None
+
+
+MAX_PENDING_DISCOUNTS = 8
+DISCOUNTS_PER_HOUR = 10
+SWEEP_EVERY = 20            # cycles between deep sweeps (~5 min)
+SWEEP_PAGES = 25            # fortnite 1-100 RUB deep sweep depth
+
+
+def hour_discount_budget(st: dict) -> bool:
+    now_ts = time.time()
+    if now_ts - st.get("discounts_hour_ts", 0) > 3600:
+        st["discounts_hour_ts"] = now_ts
+        st["discounts_sent_hour"] = 0
+    return st["discounts_sent_hour"] < DISCOUNTS_PER_HOUR
+
+
+def try_discount(it: dict, st: dict, game: str, target: float) -> None:
+    """Ask the seller for a price we can profit from; auto-buy on accept."""
+    if not it.get("allow_ask_discount"):
+        return
+    if len(st["pending_discounts"]) >= MAX_PENDING_DISCOUNTS:
+        return
+    if any(p["item_id"] == it["item_id"] for p in st["pending_discounts"]):
+        return
+    if not hour_discount_budget(st):
+        return
+    offered = max(1.0, round(target - MIN_MARGIN - FEE_BUFFER))
+    if offered < it.get("price", 0) * 0.4:
+        return  # unrealistic ask: seller would need a >60% cut
+    try:
+        api_call("POST", f"/{it['item_id']}/discount",
+                 data={"discount_price": offered,
+                       "message": f"Готов купить сразу за {offered:.0f}₽",
+                       "auto_buy": True})
+    except RuntimeError as e:
+        log(f"[discount] {it['item_id']} failed: {str(e)[:120]}")
+        return
+    st["discounts_sent_hour"] += 1
+    st["pending_discounts"].append({
+        "item_id": it["item_id"], "game": game, "price": it.get("price"),
+        "requested": offered,
+        "ts": datetime.now().isoformat(timespec="seconds"),
+    })
+    save_state(st)
+    log(f"[discount] requested {it['item_id']} [{game}]: "
+        f"{it.get('price')}₽ -> {offered:.0f}₽ (auto-buy on)")
+    notify(f"🔵 Запросил скидку: {it['item_id']} [{game}] "
+           f"{it.get('price')}₽ → {offered:.0f}₽. При согласии купится сам.")
+
+
+def check_pending_discounts(st: dict) -> None:
+    """auto_buy should purchase accepted items; detect ownership and relist."""
+    still = []
+    for row in st["pending_discounts"]:
+        iid = row["item_id"]
+        age_h = (datetime.now()
+                 - datetime.fromisoformat(row["ts"])).total_seconds() / 3600
+        try:
+            res = api_call("GET", f"/{iid}")
+        except RuntimeError as e:
+            if "404" in str(e):
+                continue  # gone: sold to someone else / deleted
+            still.append(row)
+            continue
+        item = res.get("item", res)
+        login = item.get("loginData") or {}
+        if login.get("login"):  # we own it now (buyer sees credentials)
+            log(f"[discount] ACCEPTED & bought {iid} [{row['game']}] "
+                f"за {row['requested']}₽")
+            notify(f"🟢 Скидка принята, куплено: {iid} [{row['game']}] "
+                   f"за {row['requested']}₽")
+            ok, info = relist({"item": item}, row["requested"], row["game"])
+            if ok:
+                st["spent"] += row["requested"]
+                st["bought_ids"].append(iid)
+                st["my_listings"].append({
+                    "item_id": iid, "bought": row["requested"],
+                    "game": row["game"], "link": info.split(" ")[0],
+                    "ts": row["ts"]})
+                log(f"[sell] OK {iid} -> {info}")
+                notify(f"✅ Флип [{row['game']}]: купил за "
+                       f"{row['requested']}₽, выставил {info}")
+            else:
+                notify(f"🟠 Купил {iid} со скидкой, перевыкладка не вышла: "
+                       f"{info}")
+            continue
+        if age_h > 24:
+            log(f"[discount] expired {iid}")
+            continue
+        still.append(row)
+    if len(still) != len(st["pending_discounts"]):
+        st["pending_discounts"] = still
+        save_state(st)
+
+
+def deep_sweep(seen: set, st: dict) -> None:
+    """Full pass over the existing 1-100₽ fortnite inventory: mispriced
+    gems sometimes sit for days while our fresh-lot sniper never sees them."""
+    found = 0
+    for page in range(1, SWEEP_PAGES + 1):
+        try:
+            res = api_call("GET", "/fortnite",
+                           {"pmin": "1", "pmax": "100",
+                            "order_by": "price_to_up",
+                            "page": str(page)})
+        except Exception as e:  # noqa: BLE001
+            log(f"[sweep] page {page}: {type(e).__name__}: {str(e)[:100]}")
+            break
+        items = res.get("items", [])
+        for it in items:
+            iid = it.get("item_id")
+            if iid in seen or iid in st["bought_ids"]:
+                continue
+            seen.add(iid)
+            hit = detect_game(it)
+            if not hit:
+                continue
+            game, ev = hit
+            price = float(it.get("price", 999))
+            floor, target, med = resale_stats(game)
+            cap = min(target - MIN_MARGIN - FEE_BUFFER, MAX_BUY_PRICE)
+            if target <= 0:
+                continue
+            found += 1
+            log(f"[sweep-find] https://lzt.market/{iid}/ {price:.0f}₽ "
+                f"[{game}] cap={cap:.0f}")
+            if price <= cap:
+                try_buy(it, ev, st, game)
+            else:
+                try_discount(it, st, game, target)
+        if not res.get("hasNextPage"):
+            break
+        time.sleep(1)
+    log(f"[sweep] done: {found} target lots in inventory")
 
 
 def relist(bought: dict, buy_price: float, game: str) -> tuple[bool, str]:
@@ -334,7 +473,12 @@ def cycle(seen: set, st: dict) -> None:
             game, ev = hit
             log(f"[find] https://lzt.market/{iid}/ "
                 f"{it.get('price')}₽ [{game}] :: {ev}")
-            try_buy(it, ev, st, game)
+            floor, target, med = resale_stats(game)
+            if target > 0 and float(it.get("price", 999)) <= min(
+                    target - MIN_MARGIN - FEE_BUFFER, MAX_BUY_PRICE):
+                try_buy(it, ev, st, game)
+            else:
+                try_discount(it, st, game, target or 1)
     st["last_new_scan"] = now_epoch
 
 
@@ -352,6 +496,9 @@ def main() -> None:
         try:
             cycle(seen, st)
             check_my_listings(st)
+            check_pending_discounts(st)
+            if n % SWEEP_EVERY == 0:
+                deep_sweep(seen, st)
             if n % PRICE_DUMP_EVERY == 0:
                 try:
                     price_dump()
