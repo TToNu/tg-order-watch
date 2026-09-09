@@ -28,12 +28,13 @@ CMDS_RESULT = BASE / "cmds.result.json"
 
 RANGES = [("1", "25"), ("25", "60"), ("60", "75")]
 PAGES_PER_RANGE = 2
-CYCLE_SECONDS = 75
+CYCLE_SECONDS = 15
 MAX_BUY_PRICE = 60          # never buy above this
 MIN_MARGIN = 40             # listing target minus buy price
 DAILY_BUY_LIMIT = 5
 BALANCE_FLOOR = 5           # keep at least this much on the balance
 RESELL_CATEGORY = 12        # Epic Games
+PRICE_DUMP_EVERY = 30       # cycles between full price snapshots (~10 min)
 
 
 def load_state() -> dict:
@@ -269,25 +270,26 @@ def cycle(seen: set, st: dict) -> None:
         st["day"] = today
         st["bought"] = 0
         save_state(st)
-    for pmin, pmax in RANGES:
-        for page in range(1, PAGES_PER_RANGE + 1):
-            res = api_call("GET", "/fortnite",
-                           {"pmin": pmin, "pmax": pmax,
-                            "order_by": "pdate_to_down",
-                            "page": str(page)})
-            items = res.get("items", [])
-            for it in items:
-                iid = it.get("item_id")
-                if iid in seen or iid in st["bought_ids"]:
-                    continue
-                seen.add(iid)
-                ev = item_has_dbd(it)
-                if ev:
-                    log(f"[find] https://lzt.market/{iid}/ "
-                        f"{it.get('price')}₽ :: {ev}")
-                    try_buy(it, ev, st)
-            if not res.get("hasNextPage"):
-                break
+    # Server-side freshness filter: only lots published since the previous
+    # cycle arrive (tiny response, fast even via the narrow proxy). Price
+    # history for ALL lots is collected separately by the price dumper.
+    now_epoch = int(time.time())
+    since = int(st.get("last_new_scan", now_epoch - 120)) - 30
+    res = api_call("GET", "/fortnite",
+                   {"published_after": str(since),
+                    "order_by": "pdate_to_down", "page": "1"})
+    items = res.get("items", [])
+    for it in items:
+        iid = it.get("item_id")
+        if iid in seen or iid in st["bought_ids"]:
+            continue
+        seen.add(iid)
+        ev = item_has_dbd(it)
+        if ev:
+            log(f"[find] https://lzt.market/{iid}/ "
+                f"{it.get('price')}₽ :: {ev}")
+            try_buy(it, ev, st)
+    st["last_new_scan"] = now_epoch
 
 
 def main() -> None:
@@ -304,7 +306,7 @@ def main() -> None:
         try:
             cycle(seen, st)
             check_my_listings(st)
-            if n % 4 == 0:  # every ~10 minutes: price snapshot for stats
+            if n % PRICE_DUMP_EVERY == 0:
                 try:
                     price_dump()
                 except Exception as e:  # noqa: BLE001
