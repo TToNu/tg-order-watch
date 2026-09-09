@@ -14,6 +14,13 @@ from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermedia
 BASE = Path(__file__).resolve().parent.parent
 CFG = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from session_snapshot import snapshot  # noqa: E402
+
+# Work on a copy of the session: the long-running monitor keeps the sqlite
+# session locked, while the auth key in the copy is all we need.
+SESSION = snapshot()
+
 CHATS = sys.argv[1:] or ["remotejobss", "itfreelancers", "vagaumdev"]
 
 
@@ -25,7 +32,7 @@ async def main() -> None:
         conn = ConnectionTcpMTProxyRandomizedIntermediate
         proxy_arg = (proxy["host"], int(proxy["port"]), proxy["secret"])
     client = TelegramClient(
-        str(BASE / "session"), CFG["api_id"], CFG["api_hash"],
+        str(SESSION), CFG["api_id"], CFG["api_hash"],
         connection=conn, proxy=proxy_arg,
     )
     # Session is already authorized, but Telethon v1.44 requires a phone arg

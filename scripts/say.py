@@ -4,23 +4,23 @@ activity-chat answers.
 Usage:
     python say.py <chat> <reply_to_msg_id|-> <@textfile|text>
 
-Appends a kind="answer" record to sent.log and enforces the daily answer
-limit from config "activity.daily_answer_limit" (default 3), so even a buggy
-schedule cannot turn into a spam burst.
+Instead of opening a second Telegram connection (which fights the monitor
+for the session database), this writes cmds.json and waits for the running
+monitor to execute it and answer via cmds.result.json. Enforces the daily
+answer limit from config "activity.daily_answer_limit" (default 3).
 """
 
-import asyncio
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
-
-from telethon import TelegramClient, utils
-from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermediate
 
 BASE = Path(__file__).resolve().parent.parent
 CFG = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
 SENT_LOG = BASE / "sent.log"
+CMDS_PATH = BASE / "cmds.json"
+CMDS_RESULT = BASE / "cmds.result.json"
 
 
 def answers_today() -> int:
@@ -37,7 +37,7 @@ def answers_today() -> int:
     return n
 
 
-async def main() -> None:
+def main() -> int:
     if len(sys.argv) < 4:
         sys.exit("usage: say.py <chat> <reply_to_msg_id|-> <@textfile|text>")
     chat, reply_to, text_arg = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -51,39 +51,45 @@ async def main() -> None:
     if answers_today() >= limit:
         sys.exit(f"daily answer limit reached ({limit}) — not sending")
 
-    proxy = CFG.get("proxy")
-    conn = None
-    proxy_arg = None
-    if proxy and proxy.get("proto") == "mtproto":
-        conn = ConnectionTcpMTProxyRandomizedIntermediate
-        proxy_arg = (proxy["host"], int(proxy["port"]), proxy["secret"])
-    client = TelegramClient(
-        str(BASE / "session"), CFG["api_id"], CFG["api_hash"],
-        connection=conn, proxy=proxy_arg,
-    )
-    await client.start(phone=lambda: (_ for _ in ()).throw(RuntimeError(
-        "session not authorized — run monitor.py once to log in")))
+    # Wait for a free command slot (another helper may be mid-flight).
+    deadline = time.time() + 120
+    while CMDS_PATH.exists() and time.time() < deadline:
+        time.sleep(1)
+    if CMDS_PATH.exists():
+        sys.exit("cmds.json busy for 120s — monitor not processing commands?")
 
-    rt = int(reply_to) if reply_to not in ("-", "0") else None
-    msg = await client.send_message(chat, text, reply_to=rt)
-    ent = await client.get_entity(chat)
-    link = msg_link(utils.get_peer_id(ent), msg.id,
-                    {utils.get_peer_id(ent): getattr(ent, "username", "")})
+    CMDS_RESULT.unlink(missing_ok=True)
+    CMDS_PATH.write_text(json.dumps(
+        {"send": [{"chat": chat, "reply_to": int(reply_to) if reply_to not in ("-", "0") else None, "text": text}]},
+        ensure_ascii=False,
+    ), encoding="utf-8")
+
+    deadline = time.time() + 120
+    while not CMDS_RESULT.exists() and time.time() < deadline:
+        time.sleep(1)
+    if not CMDS_RESULT.exists():
+        sys.exit("monitor did not process cmds.json in 120s")
+
+    result = json.loads(CMDS_RESULT.read_text(encoding="utf-8"))
+    CMDS_RESULT.unlink(missing_ok=True)
+    entry = (result.get("send") or [{}])[0]
+    if not entry.get("ok"):
+        sys.exit(f"send failed: {entry.get('error')}")
 
     with SENT_LOG.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(
             {
                 "kind": "answer",
                 "ts": datetime.now().isoformat(timespec="seconds"),
-                "chat": getattr(ent, "title", None) or chat,
-                "link": link,
+                "chat": chat,
+                "link": f"{chat}/{entry.get('msg_id')}",
                 "sent": text,
             },
             ensure_ascii=False,
         ) + "\n")
-    print(f"sent: chat={chat} reply_to={rt} msg_id={msg.id}")
-    await client.disconnect()
+    print(f"sent: chat={chat} msg_id={entry.get('msg_id')}")
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(main())

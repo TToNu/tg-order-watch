@@ -30,6 +30,8 @@ ORDERS_LOG = Path(__file__).with_name("orders.log")
 QUESTIONS_LOG = Path(__file__).with_name("questions.log")
 SENT_LOG = Path(__file__).with_name("sent.log")
 AUTO_STATE = Path(__file__).with_name("auto_state.json")
+CMDS_PATH = Path(__file__).with_name("cmds.json")
+CMDS_RESULT = Path(__file__).with_name("cmds.result.json")
 
 # Auto-reply text variants (rotation keeps messages from looking copy-pasted,
 # which is what Telegram's spam heuristics and chat admins look for).
@@ -112,6 +114,62 @@ def load_auto_state() -> dict:
 
 def save_auto_state(state: dict) -> None:
     AUTO_STATE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+async def process_command_file(client: TelegramClient) -> None:
+    """Execute cmds.json (written by helper scripts) on the live connection.
+
+    Protocol: writer waits until cmds.json is absent, writes it, then polls
+    cmds.result.json. We clear stale results, run the commands, write results
+    and remove cmds.json.
+    """
+    if not CMDS_PATH.exists():
+        return
+    try:
+        cmds = json.loads(CMDS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        log.warning("cmds.json unreadable: %s", e)
+        CMDS_PATH.rename(CMDS_PATH.with_name("cmds.bad.json"))
+        return
+    CMDS_RESULT.unlink(missing_ok=True)
+
+    from telethon.tl.functions.channels import JoinChannelRequest
+    result: dict = {"join": [], "send": []}
+    for name in cmds.get("join", []):
+        entry = {"chat": name, "ok": False, "error": None}
+        try:
+            ent = await client.get_entity(name)
+            await client(JoinChannelRequest(ent))
+            entry["ok"] = True
+            log.info("cmd: joined %s", name)
+        except Exception as e:  # noqa: BLE001
+            entry["error"] = str(e)
+            log.warning("cmd: join %s failed: %s", name, e)
+        result["join"].append(entry)
+
+    for item in cmds.get("send", []):
+        entry = {"chat": item.get("chat"), "ok": False, "msg_id": None, "error": None}
+        try:
+            rt = item.get("reply_to") or None
+            msg = await client.send_message(item["chat"], item["text"], reply_to=rt)
+            entry.update(ok=True, msg_id=msg.id)
+            log.info("cmd: sent to %s (reply_to=%s)", item["chat"], rt)
+        except Exception as e:  # noqa: BLE001
+            entry["error"] = str(e)
+            log.warning("cmd: send to %s failed: %s", item.get("chat"), e)
+        result["send"].append(entry)
+
+    CMDS_RESULT.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    CMDS_PATH.unlink()
+
+
+async def command_loop(client: TelegramClient) -> None:
+    while True:
+        await asyncio.sleep(5)
+        try:
+            await process_command_file(client)
+        except Exception as e:  # noqa: BLE001 - never kill the loop
+            log.warning("command loop error: %s", e)
 
 
 def ask_phone() -> str:
@@ -200,6 +258,24 @@ async def run(cfg: dict, once: bool) -> None:
     async def on_message(event: events.NewMessage.Event) -> None:
         if event.out:
             return
+
+        # Anti-spam captchas (MissRose etc.): press the button before it
+        # times out, otherwise the account gets muted/kicked from the chat.
+        low = (event.raw_text or "").lower()
+        sender = await event.get_sender()
+        if (
+            getattr(sender, "bot", False)
+            and event.buttons
+            and ("нажмите кнопку" in low or "не бот" in low or "prove" in low)
+        ):
+            try:
+                await event.buttons[0][0].click()
+                log.info("captcha button clicked in %s",
+                         targets.get(event.chat_id) or act_targets.get(event.chat_id))
+            except Exception as e:  # noqa: BLE001
+                log.warning("captcha click failed: %s", e)
+            return
+
         if not matches(event.raw_text):
             if event.chat_id in act_targets and act_matches(event.raw_text):
                 sender = await event.get_sender()
@@ -294,6 +370,7 @@ async def run(cfg: dict, once: bool) -> None:
         return
 
     log.info("watching for keywords: %s", ", ".join(cfg["keywords"]))
+    asyncio.create_task(command_loop(client))
     await client.run_until_disconnected()
 
 
