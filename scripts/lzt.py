@@ -100,27 +100,29 @@ def main() -> None:
     s = make_session()
 
     if cmd == "me":
-        for path in ("/users/me", "/market/me", "/v1/me"):
-            try:
-                me = api_get(s, path)
-            except Exception as e:  # noqa: BLE001
-                print(f"{path}: {e}")
-                continue
-            if isinstance(me, dict) and (me.get("username") or me.get("balance") is not None):
-                print(f"[from {path}]")
-                print(json.dumps(me, ensure_ascii=False, indent=1)[:2000])
-                return
-        sys.exit("no working /me path")
+        res = api_get(s, "/me")
+        u = res.get("user", res)
+        print(json.dumps({
+            "username": u.get("username"),
+            "user_id": u.get("user_id"),
+            "balance": u.get("balance"),
+            "balances": u.get("balances"),
+            "hold": u.get("hold"),
+            "active_items": u.get("active_items_count"),
+            "sold_items": u.get("sold_items_count"),
+            "rate_limit": res.get("system_info", {}).get("rate_limit"),
+        }, ensure_ascii=False, indent=1))
+        return
 
     if cmd == "search":
         game = sys.argv[2]
         pmin = sys.argv[3] if len(sys.argv) > 3 else None
         pmax = sys.argv[4] if len(sys.argv) > 4 else None
         limit = int(sys.argv[5]) if len(sys.argv) > 5 else 10
-        res = api_get(s, "/items", game=game,
+        res = api_get(s, f"/{game}",
                       **({"pmin": pmin} if pmin else {}),
                       **({"pmax": pmax} if pmax else {}),
-                      order_by="price_to_up", limit=limit)
+                      order_by="price_to_up")
         items = res.get("items", [])
         print(f"total: {res.get('total')}")
         for it in items[:limit]:
