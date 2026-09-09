@@ -261,12 +261,15 @@ async def run(cfg: dict, once: bool) -> None:
 
         # Anti-spam captchas (MissRose etc.): press the button before it
         # times out, otherwise the account gets muted/kicked from the chat.
+        # Wording varies ("нажмите кнопку" / "нажмите на кнопку" / "капча"),
+        # so match any captcha-ish word next to inline buttons.
         low = (event.raw_text or "").lower()
         sender = await event.get_sender()
+        captcha_words = ("нажмите", "кнопк", "не бот", "prove", "капч", "верификац")
         if (
             getattr(sender, "bot", False)
             and event.buttons
-            and ("нажмите кнопку" in low or "не бот" in low or "prove" in low)
+            and any(w in low for w in captcha_words)
         ):
             try:
                 await event.buttons[0][0].click()
