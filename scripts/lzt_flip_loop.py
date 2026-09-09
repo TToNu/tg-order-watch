@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lzt import api_call
-from lzt_flip import item_has_dbd, load_seen, save_seen
+from lzt_flip import detect_game, load_seen, save_seen
 
 BASE = Path(__file__).resolve().parent.parent
 FINDS_LOG = BASE / "flip_finds.log"
@@ -82,21 +82,40 @@ def balance_rub() -> float:
     return float(u.get("balance", 0) or 0)
 
 
-def resale_stats() -> tuple[float, float]:
-    """(floor, listing target): sell under the cheapest quartile of the
-    market — fast sale without dumping at the floor."""
+_stats_cache: dict[str, tuple[float, float, float]] = {}
+_stats_cache_ts: dict[str, float] = {}
+
+
+def resale_stats(game: str = "dead by daylight") -> tuple[float, float, float]:
+    """(floor, listing target, median) for a game in the Epic Games section.
+
+    Deep markets (>=10 lots): undercut p25 but never dump below floor-2.
+    Thin markets: price near the median — no point racing 2 competitors.
+    Cached for 10 minutes per game.
+    """
+    now_ts = time.time()
+    key = game.lower()
+    if key in _stats_cache and now_ts - _stats_cache_ts[key] < 600:
+        return _stats_cache[key]
     res = api_call("GET", "/epicgames",
-                   {"title": "dead by daylight", "order_by": "price_to_up"})
+                   {"title": game, "order_by": "price_to_up"})
     items = [it for it in res.get("items", [])
-             if it.get("item_state") == "active"]
+             if it.get("item_state") == "active"][:40]
     if not items:
-        return 88.0, 95.0
-    prices = sorted(float(it["price"]) for it in items[:40])
-    floor = prices[0]
-    idx = max(0, len(prices) // 4)
-    p25 = prices[idx]
-    target = max(floor - 2, min(p25 - 2, floor + 20))
-    return floor, round(target, 2)
+        stats = (88.0, 95.0, 130.0)
+    else:
+        prices = sorted(float(it["price"]) for it in items)
+        floor = prices[0]
+        p25 = prices[len(prices) // 4]
+        med = prices[len(prices) // 2]
+        if len(prices) >= 10:
+            target = max(floor - 2, min(p25 - 2, floor + 20))
+        else:
+            target = max(floor - 2, round(med * 0.9))
+        stats = (floor, round(target, 2), med)
+    _stats_cache[key] = stats
+    _stats_cache_ts[key] = now_ts
+    return stats
 
 
 def fast_buy(item_id: int, price: float) -> dict | None:
@@ -118,24 +137,22 @@ def fast_buy(item_id: int, price: float) -> dict | None:
     return None
 
 
-def relist(bought: dict, buy_price: float) -> tuple[bool, str]:
+def relist(bought: dict, buy_price: float, game: str) -> tuple[bool, str]:
     item = bought.get("item", bought)
     login = item.get("loginData") or {}
     email = item.get("emailLoginData") or {}
     cookies = (item.get("extra") or {}).get("cookies") or item.get("cookies")
-    floor, target = resale_stats()
+    floor, target, med = resale_stats(game)
     sell_price = max(1.0, target)
     body = {
-        "title": "Dead by Daylight",
-        "title_en": "Dead by Daylight",
+        "title": game,
+        "title_en": game,
         "price": sell_price,
         "category_id": RESELL_CATEGORY,
         "currency": "rub",
         "item_origin": "resale",
         "resell_item_id": item.get("item_id"),
         "allow_ask_discount": True,
-        "description": "Dead by Daylight (Epic Games). Полный доступ, "
-                       "почта в комплекте.",
     }
     lp = f"{login.get('login')}:{login.get('password')}"
     if login.get("login") and login.get("password"):
@@ -148,6 +165,8 @@ def relist(bought: dict, buy_price: float) -> tuple[bool, str]:
     if cookies:
         extra["cookies"] = cookies
     body["extra"] = extra
+    body["description"] = f"{game} (Epic Games). Полный доступ, " \
+                          f"почта в комплекте."
     try:
         res = api_call("POST", "/item/fast-sell", data=body)
     except RuntimeError as e:
@@ -156,7 +175,7 @@ def relist(bought: dict, buy_price: float) -> tuple[bool, str]:
     return True, f"{link} за {sell_price:.0f}₽ (floor {floor:.0f})"
 
 
-def try_buy(it: dict, ev: str, st: dict) -> None:
+def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
     if st["bought"] >= DAILY_BUY_LIMIT:
         log("[guard] daily buy limit reached")
         return
@@ -164,44 +183,46 @@ def try_buy(it: dict, ev: str, st: dict) -> None:
     if price > MAX_BUY_PRICE:
         log(f"[guard] {it['item_id']} price {price} > {MAX_BUY_PRICE}")
         return
-    floor, target = resale_stats()
+    floor, target, med = resale_stats(game)
     if target - price < MIN_MARGIN:
-        log(f"[guard] {it['item_id']} margin {target - price:.0f} < {MIN_MARGIN}")
+        log(f"[guard] {it['item_id']} [{game}] margin "
+            f"{target - price:.0f} < {MIN_MARGIN}")
         return
     bal = balance_rub()
     if bal - price < BALANCE_FLOOR:
         log(f"[guard] balance {bal} too low for price {price}")
         notify(f"⚠️ Баланс {bal}₽ — не хватает на лот {it['item_id']} "
-               f"за {price}₽. Жду продажи своих лотов.")
+               f"[{game}] за {price}₽. Жду продажи своих лотов.")
         return
 
-    log(f"[buy] ATTEMPT {it['item_id']} price={price} evidence={ev}")
-    notify(f"🟡 Покупаю DBD-лот {it['item_id']} за {price}₽ "
+    log(f"[buy] ATTEMPT {it['item_id']} [{game}] price={price} "
+        f"evidence={ev}")
+    notify(f"🟡 Покупаю [{game}] лот {it['item_id']} за {price}₽ "
            f"(перепродажа ~{target:.0f}₽)")
     bought = fast_buy(it["item_id"], price)
     if not bought:
-        notify(f"❌ Покупка {it['item_id']} не прошла (уплыл или ошибка)")
+        notify(f"❌ Покупка {it['item_id']} [{game}] не прошла")
         return
     st["bought"] += 1
     st["bought_ids"].append(it["item_id"])
     save_state(st)
-    log(f"[buy] OK {it['item_id']}")
-    ok, info = relist(bought, price)
+    log(f"[buy] OK {it['item_id']} [{game}]")
+    ok, info = relist(bought, price, game)
     if ok:
-        log(f"[sell] OK {it['item_id']} -> {info}")
+        log(f"[sell] OK {it['item_id']} [{game}] -> {info}")
         st["spent"] += price
         st["my_listings"].append({
-            "item_id": it["item_id"], "bought": price,
+            "item_id": it["item_id"], "bought": price, "game": game,
             "link": info.split(" ")[0] if info else "",
             "ts": datetime.now().isoformat(timespec="seconds"),
         })
         save_state(st)
-        notify(f"✅ Флип: купил {it['item_id']} за {price}₽, "
+        notify(f"✅ Флип [{game}]: купил {it['item_id']} за {price}₽, "
                f"выставил {info}")
     else:
         log(f"[sell] FAIL {it['item_id']}: {info}")
-        notify(f"🟠 Купил {it['item_id']} за {price}₽, но перевыкладка не "
-               f"вышла: {info}. Нужно вручную.")
+        notify(f"🟠 Купил {it['item_id']} [{game}] за {price}₽, но "
+               f"перевыкладка не вышла: {info}. Нужно вручную.")
 
 
 def check_my_listings(st: dict) -> None:
@@ -284,11 +305,12 @@ def cycle(seen: set, st: dict) -> None:
         if iid in seen or iid in st["bought_ids"]:
             continue
         seen.add(iid)
-        ev = item_has_dbd(it)
-        if ev:
+        hit = detect_game(it)
+        if hit:
+            game, ev = hit
             log(f"[find] https://lzt.market/{iid}/ "
-                f"{it.get('price')}₽ :: {ev}")
-            try_buy(it, ev, st)
+                f"{it.get('price')}₽ [{game}] :: {ev}")
+            try_buy(it, ev, st, game)
     st["last_new_scan"] = now_epoch
 
 

@@ -18,6 +18,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lzt import api_call
 
 DBD_RE = re.compile(r"(dead\s*by\s*day\s*light|dbd|\bdaylight\b|дбд)", re.I)
+
+# Resale portfolio (market research 10.09): paid games that hide in cheap
+# Fortnite lots. Order = priority by resale value.
+GAME_TARGETS = [
+    ("Chivalry 2", re.compile(r"chivalry\s*2", re.I)),
+    ("Rogue Company", re.compile(r"rogue\s*company", re.I)),
+    ("Dead by Daylight", DBD_RE),
+    ("Genshin Impact", re.compile(r"genshin\s*impact", re.I)),
+    ("Disco Elysium", re.compile(r"disco\s*elysium", re.I)),
+    ("Ghostrunner 2", re.compile(r"ghostrunner\s*2", re.I)),
+]
 STATE = Path(__file__).with_name(".flip_seen.json")
 
 
@@ -31,17 +42,26 @@ def save_seen(seen: set) -> None:
     STATE.write_text(json.dumps(list(seen))[-200000:], encoding="utf-8")
 
 
-def item_has_dbd(it: dict) -> str | None:
-    """Return evidence string if the lot mentions/owns Dead by Daylight."""
+def detect_game(it: dict) -> tuple[str, str] | None:
+    """(game, evidence) for the first portfolio game this lot contains."""
     text = " ".join(filter(None, [it.get("title"), it.get("title_en"),
                                   it.get("description"),
                                   it.get("description_en")]))
-    if DBD_RE.search(text):
-        return f"title/description: {text[:80]!r}"
     for tr in it.get("fortniteTransactions") or []:
-        label = " ".join(str(v) for v in tr.values())
-        if DBD_RE.search(label):
-            return f"transaction: {label[:80]!r}"
+        tr_text = " ".join(str(v) for v in tr.values())
+        for game, rx in GAME_TARGETS:
+            if rx.search(tr_text):
+                return game, f"transaction: {tr_text[:80]!r}"
+    for game, rx in GAME_TARGETS:
+        if rx.search(text):
+            return game, f"title/description: {text[:80]!r}"
+    return None
+
+
+def item_has_dbd(it: dict) -> str | None:  # kept for compatibility
+    hit = detect_game(it)
+    if hit and hit[0] == "Dead by Daylight":
+        return hit[1]
     return None
 
 
