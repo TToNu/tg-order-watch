@@ -43,8 +43,16 @@ def save_seen(seen: set) -> None:
     STATE.write_text(json.dumps(list(seen))[-200000:], encoding="utf-8")
 
 
+# Only native-Epic-platform accounts carry a standalone Epic login:password
+# we can resell in the Epic Games section; console/store-platform accounts
+# (Xbox Live, PSN, IOSAppStore, GooglePlay) may log in via platform SSO only.
+EPIC_PLATFORMS = {"epic", "epicpc", "epicandroid"}
+
+
 def detect_game(it: dict) -> tuple[str, str] | None:
     """(game, evidence) for the first portfolio game this lot contains."""
+    if (it.get("fortnite_platform") or "").lower() not in EPIC_PLATFORMS:
+        return None
     text = " ".join(filter(None, [it.get("title"), it.get("title_en"),
                                   it.get("description"),
                                   it.get("description_en")]))
