@@ -180,7 +180,21 @@ def relist(bought: dict, buy_price: float, game: str) -> tuple[bool, str]:
     try:
         res = api_call("POST", "/item/fast-sell", data=body)
     except RuntimeError as e:
-        return False, str(e)[:300]
+        err = str(e).lower()
+        if game == "GTA V" and ("social" in err or "rockstar" in err
+                                or "sc " in err):
+            # Checker demands SC data we don't have — retry as a generic
+            # Epic account lot instead of stranding the purchase.
+            body["title"] = "Epic Games | GTA V + игры"
+            body["title_en"] = "Epic Games | GTA V + games"
+            body["description"] = ("Epic Games аккаунт с играми (в т.ч. "
+                                   "GTA V). Полный доступ к Epic и почте.")
+            try:
+                res = api_call("POST", "/item/fast-sell", data=body)
+            except RuntimeError as e2:
+                return False, str(e2)[:300]
+        else:
+            return False, str(e)[:300]
     link = res.get("itemLink") or f"https://lzt.market/{res.get('item', {}).get('item_id')}/"
     return True, f"{link} за {sell_price:.0f}₽ (floor {floor:.0f})"
 
