@@ -1,49 +1,85 @@
-"""lzt.market API client through the static India SOCKS5 proxy.
+"""lzt.market API client through the static India SOCKS5 proxy (curl transport).
 
-Handles the DDoS-Guard "_dfjs" JS challenge by executing their own script
-in a sandboxed JS engine (py_mini_racer) and replaying the resulting cookie.
+PySocks handshake stalls against this proxy, while curl works flawlessly, so
+HTTP goes through curl. The DDoS-Guard "_dfjs" challenge (lzt.market pages) is
+solved by executing their script in a sandboxed JS engine.
 
 Usage:
-    python lzt.py me                       # account info + balance
+    python lzt.py me
     python lzt.py search <game> [pmin pmax] [limit]
     python lzt.py item <item_id>
+    python lzt.py raw <path> [k=v ...]
 
-Credentials: lzt_token.json {"token": "..."} and proxy from ../config.json.
+Credentials: lzt_token.json {"token": "..."}; proxy from ../config.json.
 """
 
 import json
-import re
+import subprocess
 import sys
-import time
+import tempfile
 from pathlib import Path
-
-import requests
 
 BASE = Path(__file__).resolve().parent.parent
 TOKEN_FILE = Path(__file__).with_name("lzt_token.json")
 DFJS_CACHE = Path(__file__).with_name("dfjs_b.js")
+COOKIE_JAR = Path(__file__).with_name("lzt_cookies.txt")
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
 
 API = "https://api.lzt.market"
 
 
-def make_session() -> requests.Session:
+def _proxy_args() -> list[str]:
     cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
     p = cfg["proxy"]
-    s = requests.Session()
-    s.proxies = {
-        "http": f"socks5h://{p['user']}:{p['pass']}@{p['host']}:{p['port']}",
-        "https": f"socks5h://{p['user']}:{p['pass']}@{p['host']}:{p['port']}",
-    }
-    s.headers["Authorization"] = "Bearer " + json.loads(
-        TOKEN_FILE.read_text(encoding="utf-8"))["token"]
-    s.headers["User-Agent"] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                               "AppleWebKit/537.36 (KHTML, like Gecko) "
-                               "Chrome/149.0.0.0 Safari/537.36")
-    return s
+    if p.get("proto") != "socks5" and not p.get("host"):
+        return []
+    return ["--socks5-hostname", f"{p['user']}:{p['pass']}@{p['host']}:{p['port']}"]
 
 
-def solve_challenge(html: str, s: requests.Session) -> None:
+def http(method: str, url: str, params: dict | None = None,
+         data: str | None = None, proxy: bool = True) -> tuple[int, str]:
+    """One HTTP round-trip via curl. The India SOCKS5 has a narrow channel:
+    small payloads pass, large search responses stall — so on proxy failure
+    we transparently retry direct (reads are IP-agnostic for API tokens)."""
+    if params:
+        from urllib.parse import urlencode
+        url = f"{url}?{urlencode(params)}"
+    token = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))["token"]
+    base = ["curl", "-s", "-m", "35", "-X", method,
+            "-H", f"Authorization: Bearer {token}",
+            "-H", f"User-Agent: {UA}",
+            "-b", str(COOKIE_JAR), "-c", str(COOKIE_JAR),
+            "-w", "\n__HTTP__%{http_code}"]
+    if data is not None:
+        base += ["-H", "Content-Type: application/json", "-d", data]
+
+    def run(extra: list[str]) -> tuple[int, str]:
+        out = subprocess.run(base + extra + [url], capture_output=True,
+                             text=True, encoding="utf-8",
+                             errors="replace").stdout
+        if "__HTTP__" not in out:
+            return 0, ""
+        body, _, code = out.rpartition("__HTTP__")
+        return int(code.strip()), body.strip()
+
+    if proxy:
+        code, body = run(_proxy_args())
+        if code > 0:
+            return code, body
+        print("[transport] proxy stalled, retrying direct", file=sys.stderr)
+    for attempt in range(3):
+        code, body = run([])
+        if code > 0:
+            return code, body
+        import time
+        time.sleep(3 + attempt * 3)
+    return 0, ""
+
+
+def solve_challenge(html: str) -> None:
     """Run the DDoS-Guard JS in a sandbox and store its cookie."""
+    import re
     m = re.search(r'main\("([0-9a-f]{32})",\s*"([0-9a-f]{32})",\s*"([0-9a-f]{32})"\)', html)
     if not m:
         raise RuntimeError("no challenge params in page")
@@ -52,8 +88,8 @@ def solve_challenge(html: str, s: requests.Session) -> None:
     if DFJS_CACHE.exists():
         js = DFJS_CACHE.read_text(encoding="utf-8")
     else:
-        r = s.get("https://lzt.market/_dfjs/b.js", timeout=30)
-        js = r.text
+        code, text = http("GET", "https://lzt.market/_dfjs/b.js")
+        js = text
         DFJS_CACHE.write_text(js, encoding="utf-8")
 
     from py_mini_racer import py_mini_racer
@@ -65,10 +101,9 @@ def solve_challenge(html: str, s: requests.Session) -> None:
         "set:function(v){__cookies.push(v);},"
         "get:function(){return __cookies.join('; ');}});"
         "var location={reload:function(){},href:''};"
-        "var navigator={userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',"
-        "platform:'Win32',language:'en-US',languages:['en-US','en'],"
-        "cookieEnabled:true,hardwareConcurrency:8};"
+        "var navigator={userAgent:'" + UA + "',platform:'Win32',"
+        "language:'en-US',languages:['en-US','en'],cookieEnabled:true,"
+        "hardwareConcurrency:8};"
         "var screen={width:1920,height:1080,colorDepth:24};"
         "var window={screen:screen,navigator:navigator,location:location};"
         "var fetch=function(url,opts){return Promise.resolve({ok:true,"
@@ -77,30 +112,39 @@ def solve_challenge(html: str, s: requests.Session) -> None:
     )
     ctx.eval(js)
     ctx.eval(f'main("{a}", "{b}", "{c}")')
-    raw = ctx.eval("JSON.stringify(__cookies)")
-    for pair in json.loads(raw):
-        name, _, value = pair.partition("=")
-        s.cookies.set(name.split(";")[0].strip(), value.split(";")[0])
-        print(f"[challenge] cookie {name.split(';')[0]} set")
+    pairs = json.loads(ctx.eval("JSON.stringify(__cookies)"))
+    with COOKIE_JAR.open("a", encoding="utf-8") as fh:
+        for pair in pairs:
+            kv = pair.split(";")[0]
+            name, _, value = kv.partition("=")
+            fh.write(f".lzt.market\tTRUE\t/\tFALSE\t0\t{name}\t{value}\n")
+            print(f"[challenge] cookie {name} set")
 
 
-def api_get(s: requests.Session, path: str, **params) -> dict:
-    r = s.get(API + path, params=params or None, timeout=40)
-    if "_dfjs" in r.text and "<html" in r.text[:200]:
-        solve_challenge(r.text, s)
-        r = s.get(API + path, params=params or None, timeout=40)
-    if r.status_code == 403:
-        sys.exit(f"403: {r.text[:300]}")
-    r.raise_for_status()
-    return r.json()
+def api_call(method: str, path: str, params: dict | None = None,
+             data: dict | None = None) -> dict | list:
+    code, body = http(method, API + path, params,
+                      json.dumps(data) if data else None)
+    if "_dfjs" in body and "<html" in body[:200]:
+        solve_challenge(body)
+        code, body = http(method, API + path, params,
+                          json.dumps(data) if data else None)
+    if code == 403:
+        sys.exit(f"403: {body[:300]}")
+    if code >= 400:
+        raise RuntimeError(f"HTTP {code}: {body[:300]}")
+    return json.loads(body)
+
+
+def make_session():  # compat shim for older callers
+    return None
 
 
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "me"
-    s = make_session()
 
     if cmd == "me":
-        res = api_get(s, "/me")
+        res = api_call("GET", "/me")
         u = res.get("user", res)
         print(json.dumps({
             "username": u.get("username"),
@@ -119,10 +163,12 @@ def main() -> None:
         pmin = sys.argv[3] if len(sys.argv) > 3 else None
         pmax = sys.argv[4] if len(sys.argv) > 4 else None
         limit = int(sys.argv[5]) if len(sys.argv) > 5 else 10
-        res = api_get(s, f"/{game}",
-                      **({"pmin": pmin} if pmin else {}),
-                      **({"pmax": pmax} if pmax else {}),
-                      order_by="price_to_up")
+        params = {"order_by": "price_to_up"}
+        if pmin:
+            params["pmin"] = pmin
+        if pmax:
+            params["pmax"] = pmax
+        res = api_call("GET", f"/{game}", params)
         items = res.get("items", [])
         print(f"total: {res.get('total')}")
         for it in items[:limit]:
@@ -132,8 +178,15 @@ def main() -> None:
         return
 
     if cmd == "item":
-        data = api_get(s, f"/item/{sys.argv[2]}")
-        print(json.dumps(data, ensure_ascii=False, indent=1)[:4000])
+        data = api_call("GET", f"/{sys.argv[2]}")
+        print(json.dumps(data, ensure_ascii=False, indent=1)[:5000])
+        return
+
+    if cmd == "raw":
+        path = sys.argv[2]
+        params = dict(a.split("=", 1) for a in sys.argv[3:])
+        print(json.dumps(api_call("GET", path, params),
+                         ensure_ascii=False, indent=1)[:8000])
         return
 
     sys.exit(f"unknown command {cmd}")
