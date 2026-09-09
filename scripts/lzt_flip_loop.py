@@ -103,7 +103,7 @@ def resale_stats(game: str = "dead by daylight") -> tuple[float, float, float]:
     items = [it for it in res.get("items", [])
              if it.get("item_state") == "active"][:40]
     if not items:
-        stats = (88.0, 95.0, 130.0)
+        stats = (0.0, 0.0, 0.0)  # empty market -> try_buy's cap rejects
     else:
         prices = sorted(float(it["price"]) for it in items)
         floor = prices[0]

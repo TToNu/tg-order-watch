@@ -19,17 +19,16 @@ from lzt import api_call
 
 DBD_RE = re.compile(r"(dead\s*by\s*day\s*light|dbd|\bdaylight\b|дбд)", re.I)
 
-# Resale portfolio (market research 10.09): PAID games only — an Epic
-# ownership record of a paid game is transferable value. F2P titles
-# (Genshin, Rogue Company) are excluded: their "purchase" rows are just
-# installs, value sits in unparseable in-game progress/donate.
-# Order = priority by resale value.
+# Resale portfolio: games NEVER given free on the Epic Games Store —
+# only those carry transferable value in an Epic ownership record.
+# Verified 10.09: Chivalry 2, Disco Elysium, Ghostrunner 2, Genshin,
+# Rogue Company were free/F2P → dropped (stale 15-149₽ lots, no churn).
 GAME_TARGETS = [
     ("GTA V", re.compile(r"grand\s*theft\s*auto|\bgta\s*v\b", re.I)),
-    ("Chivalry 2", re.compile(r"chivalry\s*2", re.I)),
+    ("Red Dead Redemption 2", re.compile(r"red\s*dead\s*redemption", re.I)),
+    ("Cyberpunk 2077", re.compile(r"cyberpunk\s*2077", re.I)),
     ("Dead by Daylight", DBD_RE),
-    ("Disco Elysium", re.compile(r"disco\s*elysium", re.I)),
-    ("Ghostrunner 2", re.compile(r"ghostrunner\s*2", re.I)),
+    ("Kerbal Space Program", re.compile(r"kerbal\s*space", re.I)),
 ]
 STATE = Path(__file__).with_name(".flip_seen.json")
 
