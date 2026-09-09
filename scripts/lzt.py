@@ -130,9 +130,11 @@ def api_call(method: str, path: str, params: dict | None = None,
         code, body = http(method, API + path, params,
                           json.dumps(data) if data else None)
     if code == 403:
-        sys.exit(f"403: {body[:300]}")
+        raise RuntimeError(f"403: {body[:300]}")
     if code >= 400:
         raise RuntimeError(f"HTTP {code}: {body[:300]}")
+    if code == 0:
+        raise RuntimeError("transport failed after retries")
     return json.loads(body)
 
 
