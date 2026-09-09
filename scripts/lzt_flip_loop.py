@@ -42,8 +42,14 @@ def load_state() -> dict:
     if STATE.exists():
         st = json.loads(STATE.read_text(encoding="utf-8"))
     else:
-        st = {"day": "", "bought": 0, "bought_ids": [],
-              "my_listings": [], "spent": 0.0, "earned": 0.0}
+        st = {}
+    st.setdefault("day", "")
+    st.setdefault("bought", 0)
+    st.setdefault("bought_ids", [])
+    st.setdefault("my_listings", [])
+    st.setdefault("spent", 0.0)
+    st.setdefault("earned", 0.0)
+    st.setdefault("first_flip_reported", False)
     st.setdefault("pending_discounts", [])
     st.setdefault("pending_relists", [])
     st.setdefault("discounts_sent_hour", 0)
