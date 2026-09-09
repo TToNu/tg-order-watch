@@ -165,8 +165,18 @@ def relist(bought: dict, buy_price: float, game: str) -> tuple[bool, str]:
     if cookies:
         extra["cookies"] = cookies
     body["extra"] = extra
-    body["description"] = f"{game} (Epic Games). Полный доступ, " \
-                          f"почта в комплекте."
+    if game == "GTA V":
+        # SC linkage is undetectable pre-purchase (Rockstar-side); the market
+        # convention is selling such accounts explicitly "no SC access".
+        body["title"] = "GTA V (Epic) возможна привязка SC, без доступа к SC"
+        body["title_en"] = "GTA V (Epic), SC access not included"
+        body["description"] = (
+            "GTA V Premium Edition на Epic Games. Полный доступ к Epic и "
+            "почте. Внимание: возможна привязка Social Club без передачи "
+            "доступа к SC (стандарт для Epic-аккаунтов с GTA).")
+    else:
+        body["description"] = f"{game} (Epic Games). Полный доступ, " \
+                              f"почта в комплекте."
     try:
         res = api_call("POST", "/item/fast-sell", data=body)
     except RuntimeError as e:
