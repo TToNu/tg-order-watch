@@ -278,7 +278,6 @@ async def run(cfg: dict, once: bool) -> None:
 
         if not matches(event.raw_text):
             if event.chat_id in act_targets and act_matches(event.raw_text):
-                sender = await event.get_sender()
                 who = getattr(sender, "username", None) or getattr(sender, "first_name", "?")
                 if getattr(sender, "bot", False):
                     return
@@ -294,8 +293,12 @@ async def run(cfg: dict, once: bool) -> None:
                 log.info("question in %s from @%s", act_targets[event.chat_id], who)
             return
         title = targets.get(event.chat_id, str(event.chat_id))
-        sender = await event.get_sender()
         who = getattr(sender, "username", None) or getattr(sender, "first_name", "?")
+        # Bot posts in GROUP chats are service noise (captchas, greetings) —
+        # channel aggregators are fine, they carry real orders.
+        if getattr(sender, "bot", False) and not (event.is_channel and not event.is_group):
+            log.info("bot noise skipped in %s from @%s", title, who)
+            return
         stamp = datetime.now().strftime("%H:%M:%S")
         log.info("[%s] match in %s from @%s", stamp, title, who)
 
