@@ -22,12 +22,9 @@ PRICE_DIR = Path(__file__).resolve().parent.parent / "prices"
 FEEDS = {
     "dbd": ("/epicgames", {"title": "dead by daylight",
                            "order_by": "price_to_up"}),
+    "gta": ("/epicgames", {"title": "gta", "order_by": "price_to_up"}),
     "chivalry2": ("/epicgames", {"title": "chivalry 2",
                                  "order_by": "price_to_up"}),
-    "rogue_company": ("/epicgames", {"title": "rogue company",
-                                      "order_by": "price_to_up"}),
-    "genshin": ("/epicgames", {"title": "genshin impact",
-                               "order_by": "price_to_up"}),
     "disco_elysium": ("/epicgames", {"title": "disco elysium",
                                      "order_by": "price_to_up"}),
     "ghostrunner2": ("/epicgames", {"title": "ghostrunner 2",

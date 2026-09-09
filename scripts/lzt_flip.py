@@ -19,13 +19,15 @@ from lzt import api_call
 
 DBD_RE = re.compile(r"(dead\s*by\s*day\s*light|dbd|\bdaylight\b|дбд)", re.I)
 
-# Resale portfolio (market research 10.09): paid games that hide in cheap
-# Fortnite lots. Order = priority by resale value.
+# Resale portfolio (market research 10.09): PAID games only — an Epic
+# ownership record of a paid game is transferable value. F2P titles
+# (Genshin, Rogue Company) are excluded: their "purchase" rows are just
+# installs, value sits in unparseable in-game progress/donate.
+# Order = priority by resale value.
 GAME_TARGETS = [
+    ("GTA V", re.compile(r"grand\s*theft\s*auto|\bgta\s*v\b", re.I)),
     ("Chivalry 2", re.compile(r"chivalry\s*2", re.I)),
-    ("Rogue Company", re.compile(r"rogue\s*company", re.I)),
     ("Dead by Daylight", DBD_RE),
-    ("Genshin Impact", re.compile(r"genshin\s*impact", re.I)),
     ("Disco Elysium", re.compile(r"disco\s*elysium", re.I)),
     ("Ghostrunner 2", re.compile(r"ghostrunner\s*2", re.I)),
 ]
