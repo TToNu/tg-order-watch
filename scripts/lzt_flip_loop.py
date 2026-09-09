@@ -45,6 +45,7 @@ def load_state() -> dict:
         st = {"day": "", "bought": 0, "bought_ids": [],
               "my_listings": [], "spent": 0.0, "earned": 0.0}
     st.setdefault("pending_discounts", [])
+    st.setdefault("pending_relists", [])
     st.setdefault("discounts_sent_hour", 0)
     st.setdefault("discounts_hour_ts", 0)
     return st
@@ -128,11 +129,28 @@ def resale_stats(game: str = "dead by daylight") -> tuple[float, float, float]:
     return stats
 
 
+_balance_id_cache: int | None = None
+
+
+def purchase_balance_id() -> int | None:
+    global _balance_id_cache
+    if _balance_id_cache:
+        return _balance_id_cache
+    me = api_call("GET", "/me")
+    u = me.get("user", me)
+    for b in u.get("balances") or []:
+        if b.get("type") == "account":
+            _balance_id_cache = b.get("balance_id")
+            return _balance_id_cache
+    return None
+
+
 def fast_buy(item_id: int, price: float) -> dict | None:
     for attempt in range(30):
         try:
             res = api_call("POST", f"/{item_id}/fast-buy",
-                           data={"price": price})
+                           data={"price": price,
+                                 "balance_id": purchase_balance_id()})
         except RuntimeError as e:
             msg = str(e)
             if "retry_request" in msg:
@@ -370,11 +388,11 @@ def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
             "ts": datetime.now().isoformat(timespec="seconds"),
         })
         save_state(st)
-        log(f"[sell] OK {it['item_id']} [{game}] -> {info}")
     else:
         log(f"[sell] FAIL {it['item_id']}: {info}")
-        notify(f"🟠 Купил {it['item_id']} [{game}] за {price}₽, но "
-               f"перевыкладка не вышла: {info}. Нужно вручную.")
+        queue_relist(it["item_id"], price, game)
+        notify(f"🟠 Купил {it['item_id']} [{game}] за {price}₽, "
+               f"выкладка отложена в очередь: {info[:100]}")
 
 
 def check_my_listings(st: dict) -> None:
@@ -441,6 +459,50 @@ def sweep_balances() -> None:
             f"переведи выручку на баланс покупок вручную")
 
 
+def queue_relist(item_id: int, price: float, game: str) -> None:
+    st = load_state()
+    if any(r["item_id"] == item_id for r in st["pending_relists"]):
+        return
+    st["pending_relists"].append({
+        "item_id": item_id, "price": price, "game": game,
+        "attempts": 0,
+        "ts": datetime.now().isoformat(timespec="seconds")})
+    save_state(st)
+    log(f"[relist-queue] {item_id} [{game}] queued "
+        f"(checker/cookies issue, will retry)")
+
+
+def check_pending_relists(st: dict) -> None:
+    """Retry relisting bought accounts (e.g. while the Epic checker is down)."""
+    still = []
+    for row in st["pending_relists"]:
+        iid = row["item_id"]
+        row["attempts"] += 1
+        try:
+            res = api_call("GET", f"/{iid}")
+            item = res.get("item", res)
+            ok, info = relist({"item": item}, row["price"], row["game"])
+        except RuntimeError as e:
+            ok, info = False, str(e)[:200]
+        if ok:
+            log(f"[relist-queue] OK {iid} -> {info}")
+            st["my_listings"].append({
+                "item_id": iid, "bought": row["price"], "game": row["game"],
+                "link": info.split(" ")[0], "ts": row["ts"]})
+            notify(f"✅ Отложенная выкладка прошла: {iid} [{row['game']}] "
+                   f"-> {info}")
+            continue
+        if row["attempts"] >= 120:  # ~30 min of cycles
+            log(f"[relist-queue] giving up {iid}: {info}")
+            notify(f"🟠 Не удалось выложить {iid} [{row['game']}]: {info}. "
+                   f"Нужно вручную (возможно, требуются cookies).")
+            continue
+        still.append(row)
+    if len(still) != len(st["pending_relists"]):
+        st["pending_relists"] = still
+        save_state(st)
+
+
 def handle_find(it: dict, st: dict, detector) -> None:
     """Common buy/discount decision for a candidate lot from any section."""
     hit = detector(it)
@@ -499,6 +561,7 @@ def main() -> None:
             cycle(seen, st)
             check_my_listings(st)
             check_pending_discounts(st)
+            check_pending_relists(st)
             if n % SWEEP_EVERY == 0:
                 deep_sweep(seen, st)
             if n % PRICE_DUMP_EVERY == 0:
@@ -514,6 +577,10 @@ def main() -> None:
                   flush=True)
         except Exception as e:  # noqa: BLE001 - never die
             print(f"[cycle {n}] error: {type(e).__name__}: {e}", flush=True)
+        except BaseException:
+            import traceback
+            tb = traceback.format_exc()
+            log(f"[CRASH-RECOVERED] {tb[:800]}")
         save_seen(seen)
         time.sleep(CYCLE_SECONDS)
 
