@@ -34,6 +34,11 @@ MIN_MARGIN = 40             # listing target minus buy price
 MARGIN_RATIO = 1.5          # sell price must be >= 1.5x the buy price
 FEE_BUFFER = 5              # marketplace fee / repricing safety
 BALANCE_FLOOR = 5           # keep at least this much on the balance
+# Per-game caps: GTA V without Social Club access is a higher-risk resale
+# (buyer disputes), so we limit exposure on the first purchases.
+GAME_PRICE_CAPS = {
+    "GTA V": 30,
+}
 RESELL_CATEGORY = 12        # Epic Games
 PRICE_DUMP_EVERY = 30       # cycles between full price snapshots (~10 min)
 
@@ -185,12 +190,14 @@ def hour_discount_budget(st: dict) -> bool:
     return st["discounts_sent_hour"] < DISCOUNTS_PER_HOUR
 
 
-def max_payable(target: float) -> float:
-    """Highest buy price that keeps both >= MIN_MARGIN profit and >= 1.5x ROI."""
+def max_payable(target: float, game: str = "") -> float:
+    """Highest buy price that keeps both >= MIN_MARGIN profit and >= 1.5x ROI.
+    Some games carry extra resale risk (GTA V SC disputes) — capped lower."""
     if target <= 0:
         return 0.0
+    cap = GAME_PRICE_CAPS.get(game, MAX_BUY_PRICE)
     return round(min(target - MIN_MARGIN - FEE_BUFFER,
-                     target / MARGIN_RATIO, MAX_BUY_PRICE), 2)
+                     target / MARGIN_RATIO, cap), 2)
 
 
 def try_discount(it: dict, st: dict, game: str, target: float) -> None:
@@ -203,7 +210,7 @@ def try_discount(it: dict, st: dict, game: str, target: float) -> None:
         return
     if not hour_discount_budget(st):
         return
-    offered = max(1.0, max_payable(target))
+    offered = max(1.0, max_payable(target, game))
     if offered < it.get("price", 0) * 0.4:
         return  # unrealistic ask: seller would need a >60% cut
     try:
@@ -371,7 +378,7 @@ def relist(bought: dict, buy_price: float, game: str) -> tuple[bool, str]:
 def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
     price = float(it.get("price", 999))
     floor, target, med = resale_stats(game)
-    cap = max_payable(target)
+    cap = max_payable(target, game)
     if price > cap:
         log(f"[guard] {it['item_id']} [{game}] price {price:.0f} > "
             f"cap {cap:.0f} (target {target:.0f})")
@@ -628,7 +635,7 @@ def handle_find(it: dict, st: dict, detector) -> None:
     price = float(it.get("price", 999))
     log(f"[find] https://lzt.market/{it.get('item_id')}/ "
         f"{price:.0f}₽ [{game}] :: {ev}")
-    if price <= max_payable(target):
+    if price <= max_payable(target, game):
         try_buy(it, ev, st, game)
     else:
         try_discount(it, st, game, target)
