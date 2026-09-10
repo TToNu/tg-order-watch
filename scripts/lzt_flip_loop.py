@@ -40,6 +40,11 @@ BALANCE_FLOOR = 5           # keep at least this much on the balance
 GAME_PRICE_CAPS = {
     "GTA V": 30,
 }
+# Per-game minimum margin override (default MIN_MARGIN=40)
+# DBD is a high-liquidity market: smaller margin is offset by fast turnover
+GAME_MIN_MARGIN = {
+    "Dead by Daylight": 20,  # buy ≤68, sell at p25 ≈88 → ROI 1.29x
+}
 RESELL_CATEGORY = 12        # Epic Games
 PRICE_DUMP_EVERY = 120       # cycles between full price snapshots (~10 min)
 
@@ -255,12 +260,12 @@ def verify_games(item: dict, expected_game: str) -> tuple[str, bool, str]:
 
 
 def max_payable(target: float, game: str = "") -> float:
-    """Highest buy price that keeps both >= MIN_MARGIN profit and >= 1.5x ROI.
-    Some games carry extra resale risk (GTA V SC disputes) — capped lower."""
+    """Highest buy price that keeps the margin and ROI for this game."""
     if target <= 0:
         return 0.0
+    margin = GAME_MIN_MARGIN.get(game, MIN_MARGIN)
     cap = GAME_PRICE_CAPS.get(game, MAX_BUY_PRICE)
-    return round(min(target - MIN_MARGIN - FEE_BUFFER,
+    return round(min(target - margin - FEE_BUFFER,
                      target / MARGIN_RATIO, cap), 2)
 
 
