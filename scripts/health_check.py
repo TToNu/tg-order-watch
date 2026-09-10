@@ -35,8 +35,10 @@ def python_procs() -> list[str]:
 def start_window(title: str, script: str) -> None:
     try:
         subprocess.run(
-            ["cmd", "/c", f'start "{title}" cmd /c "{SCRIPTS / script}"'],
-            shell=True, cwd=str(BASE), timeout=30)
+            ["powershell", "-Command",
+             f"Start-Process -FilePath 'cmd' -ArgumentList '/c',"
+             f"'{SCRIPTS / script}' -WindowStyle Hidden"],
+            timeout=15)
     except subprocess.TimeoutExpired:
         pass  # window started but cmd held the pipe — that's fine
 
