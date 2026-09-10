@@ -29,9 +29,7 @@ from lzt import api_call
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 PORT = 9333
 BRIDGE_PORT = 9340
-# Epic blocks most datacenter/residential proxies (Cloudflare 403); the
-# direct home connection passes Turnstile. Georgia SOCKS5 is the fallback
-# when direct fails (Chrome can solve CF challenges that curl can't).
+import os
 # Default proxy — can be overridden per-run via EPIC_PROXY env var.
 # Each ClipProxy port = different exit IP, giving every account a fresh
 # identity (no accumulated security flags from previous attempts).
@@ -39,7 +37,6 @@ DEFAULT_PROXY = "http://192.168.56.1:40000"
 PROXY_UPSTREAM = os.environ.get("EPIC_PROXY", DEFAULT_PROXY).strip()
 # Epic throws a hard security checkpoint at datacenter IPs — direct home
 # connection passes Turnstile silently. Set EPIC_NOPROXY=1 to skip the proxy.
-import os
 USE_PROXY = os.environ.get("EPIC_NOPROXY", "").strip() != "1" and bool(
     PROXY_UPSTREAM)
 
@@ -412,19 +409,12 @@ def run(headless: bool = True) -> tuple[list[dict], bool]:
     try:
         time.sleep(6)
         cdp = CDP(page_ws())
-        # Clear previous Epic session cookies (keep Cloudflare trust cookies)
+        # CRITICAL: Clear stale Epic session cookies from the persistent
+        # profile. Old cookies make the harvest "succeed" without actually
+        # logging in, skipping the 2FA-disable and SC-unlink steps.
         cdp.call("Network.enable", {})
-        cdp.eval_js("""
-            document.cookie.split(';').forEach(c => {
-                const name = c.split('=')[0].trim();
-                if (name.startsWith('EPIC_') || name === '_epicSID') {
-                    document.cookie = name + '=;expires=Thu, 01 Jan 1970'
-                        + ' 00:00:00 GMT;path=/;domain=.epicgames.com';
-                }
-            });
-        """)
-        cdp.call("Page.navigate",
-                 {"url": "https://www.epicgames.com/id/logout"})
+        cdp.call("Storage.clearCookies", {})
+        print("  [session] cookies cleared for fresh login", flush=True)
         time.sleep(2)
         cdp.call("Page.navigate", {"url": "https://www.epicgames.com/id/login"})
         ok = False
