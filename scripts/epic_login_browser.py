@@ -381,6 +381,12 @@ def run(headless: bool = True) -> tuple[list[dict], bool]:
                 break
             time.sleep(1)
         ok = login_steps(cdp, email, password, email_pass)
+
+        # CRITICAL: disable 2FA before collecting cookies — otherwise
+        # the market's checker can't verify the account
+        if ok:
+            disable_2fa(cdp)
+
         raw = []
         for _ in range(10):
             time.sleep(2)
