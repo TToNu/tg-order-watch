@@ -612,10 +612,9 @@ def cycle(seen: set, st: dict) -> None:
 
 
 def main() -> None:
-    print("autonomous flipper started: ranges "
-          + ", ".join(f"{a}-{b}₽" for a, b in RANGES)
-          + f" | max_buy {MAX_BUY_PRICE}₽ | margin ≥{MIN_MARGIN}₽ | "
-            f"daily cap {DAILY_BUY_LIMIT}", flush=True)
+    print("autonomous flipper started: fresh lots in fortnite+epicgames "
+          f"| max_buy {MAX_BUY_PRICE}₽ | margin ≥{MIN_MARGIN}₽ "
+          f"(ROI ≥{MARGIN_RATIO}x) | no daily cap", flush=True)
     from lzt_prices import dump as price_dump
     seen = load_seen()
     st = load_state()
