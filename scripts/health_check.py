@@ -33,9 +33,12 @@ def python_procs() -> list[str]:
 
 
 def start_window(title: str, script: str) -> None:
-    subprocess.run(
-        ["cmd", "/c", f'start "{title}" cmd /c "{SCRIPTS / script}"'],
-        shell=True, cwd=str(BASE), timeout=15)
+    try:
+        subprocess.run(
+            ["cmd", "/c", f'start "{title}" cmd /c "{SCRIPTS / script}"'],
+            shell=True, cwd=str(BASE), timeout=30)
+    except subprocess.TimeoutExpired:
+        pass  # window started but cmd held the pipe — that's fine
 
 
 def kill_pattern(pattern: str) -> int:
