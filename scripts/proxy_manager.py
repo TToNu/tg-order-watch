@@ -21,7 +21,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 BASE = HERE.parent
-API_URL = "http://10.6.7.1:1998/api"
+API_URL = "http://192.168.56.1:1998/api"
 LZT_PROXY = HERE / "lzt_proxy.json"
 CONFIG = BASE / "config.json"
 
