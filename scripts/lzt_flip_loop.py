@@ -28,7 +28,7 @@ CMDS_RESULT = BASE / "cmds.result.json"
 
 RANGES = [("1", "25"), ("25", "60"), ("60", "75")]
 PAGES_PER_RANGE = 2
-CYCLE_SECONDS = 15
+CYCLE_SECONDS = 5              # turbo: 12 scans/min, well under rate limits
 MAX_BUY_PRICE = 130         # absolute ceiling (balance-bound anyway)
 MIN_MARGIN = 40             # listing target minus buy price
 MARGIN_RATIO = 1.5          # sell price must be >= 1.5x the buy price
@@ -40,7 +40,7 @@ GAME_PRICE_CAPS = {
     "GTA V": 30,
 }
 RESELL_CATEGORY = 12        # Epic Games
-PRICE_DUMP_EVERY = 30       # cycles between full price snapshots (~10 min)
+PRICE_DUMP_EVERY = 120       # cycles between full price snapshots (~10 min)
 
 
 def load_state() -> dict:
@@ -157,7 +157,9 @@ def purchase_balance_id() -> int | None:
 
 
 def fast_buy(item_id: int, price: float) -> dict | None:
-    for attempt in range(30):
+    """Buy with aggressive retry: handles retry_request AND the
+    'another buyer's auto-purchase queue' race — snipe back in 1s."""
+    for attempt in range(50):
         try:
             res = api_call("POST", f"/{item_id}/fast-buy",
                            data={"price": price,
@@ -165,7 +167,12 @@ def fast_buy(item_id: int, price: float) -> dict | None:
         except RuntimeError as e:
             msg = str(e)
             if "retry_request" in msg:
-                time.sleep(2)
+                time.sleep(0.5)
+                continue
+            # "Аккаунт находится в очереди на автоматическую покупку"
+            # -> another bot is buying; retry fast to snipe if they fail
+            if "очеред" in msg or "queue" in msg.lower():
+                time.sleep(1)
                 continue
             if "This item is sold" in msg or "404" in msg:
                 log(f"[buy] {item_id} gone: {msg[:120]}")
@@ -178,7 +185,7 @@ def fast_buy(item_id: int, price: float) -> dict | None:
 
 MAX_PENDING_DISCOUNTS = 8
 DISCOUNTS_PER_HOUR = 10
-SWEEP_EVERY = 20            # cycles between deep sweeps (~5 min)
+SWEEP_EVERY = 60             # cycles between deep sweeps (~5 min at 5s)
 SWEEP_PAGES = 25            # fortnite 1-100 RUB deep sweep depth
 
 

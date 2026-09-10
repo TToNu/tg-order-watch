@@ -62,7 +62,7 @@ def http(method: str, url: str, params: dict | None = None,
         from urllib.parse import urlencode
         url = f"{url}?{urlencode(params)}"
     token = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))["token"]
-    base = ["curl", "-s", "-m", "12", "-X", method,
+    base = ["curl", "-s", "-m", "6", "-X", method,
             "-H", f"Authorization: Bearer {token}",
             "-H", f"User-Agent: {UA}",
             "-b", str(COOKIE_JAR), "-c", str(COOKIE_JAR),
