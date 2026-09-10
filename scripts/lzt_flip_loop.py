@@ -18,7 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lzt import api_call
-from lzt_flip import detect_game, detect_game_generic, load_seen, save_seen
+from lzt_flip import (detect_game_fortnite, detect_game_epicgames,
+                      load_seen, save_seen)
 
 BASE = Path(__file__).resolve().parent.parent
 FINDS_LOG = BASE / "flip_finds.log"
@@ -356,8 +357,8 @@ def deep_sweep(seen: set, st: dict) -> None:
     """Full pass over existing cheap inventory in BOTH sections: mispriced
     gems sometimes sit for days while the fresh-lot sniper never sees them."""
     found = 0
-    for endpoint, detector in (("/fortnite", detect_game),
-                               ("/epicgames", detect_game_generic)):
+    for endpoint, detector in (("/fortnite", detect_game_fortnite),
+                               ("/epicgames", detect_game_epicgames)):
         for page in range(1, SWEEP_PAGES + 1):
             try:
                 res = api_call("GET", endpoint,
@@ -736,8 +737,8 @@ def cycle(seen: set, st: dict) -> None:
     # responses; at 5s cycles we only need the last minute at most
     since = max(int(st.get("last_new_scan", now_epoch - 30)) - 10,
                 now_epoch - 60)
-    for endpoint, detector in (("/fortnite", detect_game),
-                               ("/epicgames", detect_game_generic)):
+    for endpoint, detector in (("/fortnite", detect_game_fortnite),
+                               ("/epicgames", detect_game_epicgames)):
         res = api_call("GET", endpoint,
                        {"published_after": str(since),
                         "pmin": "1", "pmax": str(MAX_BUY_PRICE),
