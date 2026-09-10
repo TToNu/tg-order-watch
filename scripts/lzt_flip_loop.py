@@ -478,8 +478,59 @@ def queue_relist(item_id: int, price: float, game: str) -> None:
         f"(checker/cookies issue, will retry)")
 
 
+def harvest_epic_cookies(item_id: int) -> bool:
+    """Run the background Epic login harvester for an item we own."""
+    import os
+    import subprocess
+    env = {**os.environ, "EPIC_NOPROXY": "1",
+           "PYTHONIOENCODING": "utf-8"}
+    try:
+        subprocess.run(
+            [sys.executable, str(Path(__file__).with_name(
+                "epic_login_browser.py")), str(item_id)],
+            env=env, capture_output=True, text=True, timeout=300)
+    except Exception as e:  # noqa: BLE001
+        log(f"[harvest] {item_id}: {type(e).__name__}: {e}")
+        return False
+    return (Path(__file__).with_name(
+        f"epic_cookies_{item_id}.json")).exists()
+
+
+def relist_with_cookies(item_id: int, price: float, game: str) -> tuple[bool, str]:
+    """Relist using freshly harvested Epic session cookies."""
+    cookies_file = Path(__file__).with_name(f"epic_cookies_{item_id}.json")
+    cookies = cookies_file.read_text(encoding="utf-8").strip()
+    res = api_call("GET", f"/{item_id}")
+    item = res.get("item", res)
+    login = item.get("loginData") or {}
+    email = item.get("emailLoginData") or {}
+    floor, target, med = resale_stats(game)
+    body = {
+        "title": game, "title_en": game, "price": max(1.0, target),
+        "category_id": RESELL_CATEGORY, "currency": "rub",
+        "item_origin": "resale", "resell_item_id": item_id,
+        "allow_ask_discount": True,
+        "description": f"{game} (Epic Games). Полный доступ, "
+                       f"почта в комплекте.",
+        "extra": {"cookies": cookies, "close_item": False},
+    }
+    if login.get("login"):
+        body["login_password"] = f"{login['login']}:{login['password']}"
+    if email.get("login"):
+        body["has_email_login_data"] = True
+        body["email_login_data"] = f"{email['login']}:{email['password']}"
+        body["email_type"] = "native"
+    try:
+        res = api_call("POST", "/item/fast-sell", data=body)
+    except RuntimeError as e:
+        return False, str(e)[:300]
+    link = res.get("itemLink") or f"https://lzt.market/" \
+           f"{res.get('item', {}).get('item_id')}/"
+    return True, f"{link} за {target}₽ (floor {floor})"
+
+
 def check_pending_relists(st: dict) -> None:
-    """Retry relisting bought accounts (e.g. while the Epic checker is down)."""
+    """Retry relisting bought accounts; harvest cookies when demanded."""
     still = []
     for row in st["pending_relists"]:
         iid = row["item_id"]
@@ -490,6 +541,14 @@ def check_pending_relists(st: dict) -> None:
             ok, info = relist({"item": item}, row["price"], row["game"])
         except RuntimeError as e:
             ok, info = False, str(e)[:200]
+        if not ok and "cookie" in info.lower():
+            log(f"[relist-queue] {iid}: cookie demand -> harvesting session")
+            if harvest_epic_cookies(iid):
+                ok, info = relist_with_cookies(iid, row["price"], row["game"])
+                log(f"[relist-queue] cookie relist {iid}: ok={ok} {info}")
+            else:
+                log(f"[relist-queue] harvest failed for {iid}")
+                ok = False
         if ok:
             log(f"[relist-queue] OK {iid} -> {info}")
             st["my_listings"].append({

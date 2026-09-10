@@ -1,25 +1,40 @@
-"""Log into epicgames.com in a real browser (CDP-driven Chrome) and export
-session cookies for lzt.market fast-sell.
+"""Harvest epicgames.com session cookies for a market item — fully in the
+background (headless Chrome) through the US Texas mobile SOCKS5 proxy.
 
-Pure-HTTP login is captcha-blocked; a genuine Chromium passes Turnstile.
+The proxy is dynamic-IP per connection, which Epic trusts; Chromium cannot
+authenticate SOCKS inline, so pproxy bridges a local unauthenticated port.
 
-Usage: python epic_login_browser.py
-Reads credentials from bought_item.json; writes epic_cookies.txt.
+Usage:
+    python epic_login_browser.py [item_id]
+
+Credentials: item loginData via the market API (or bought_item.json when no
+item_id given). Writes epic_cookies_<item_id>.json (Cookie-Editor format).
 """
 
 import base64
 import json
 import subprocess
+import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
 import websocket
 
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from lzt import api_call
+
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 PORT = 9333
-PROFILE = str(Path(__file__).with_name(".chrome_epic_profile"))
-HERE = Path(__file__).resolve().parent
+BRIDGE_PORT = 9340
+PROXY_UPSTREAM = "socks5://iZv57jYf:GiQ4H1jE6X@151.242.178.178:50101"
+# Epic throws a hard security checkpoint at datacenter IPs — direct home
+# connection passes Turnstile silently. Set EPIC_NOPROXY=1 to skip the proxy.
+import os
+USE_PROXY = os.environ.get("EPIC_NOPROXY", "").strip() != "1" and bool(
+    PROXY_UPSTREAM)
 
 
 class CDP:
@@ -51,7 +66,8 @@ class CDP:
 
 
 def page_ws() -> str:
-    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json", timeout=10) as r:
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json",
+                                timeout=10) as r:
         targets = json.loads(r.read().decode())
     for t in targets:
         if t.get("type") == "page" and "epicgames" in (t.get("url") or ""):
@@ -92,96 +108,112 @@ SET_INPUTS = """
 """
 
 
-def login_steps(cdp, email: str, password: str) -> None:
-    js = SET_INPUTS.replace("EMAIL", json.dumps(email)) \
-                   .replace("PASSWORD", json.dumps(password))
-    for step in range(5):
-        result = str(cdp.eval_js(js, await_promise=True))
-        print(f"step {step}: {result}")
-        time.sleep(4)
-        url = str(cdp.eval_js("location.href"))
-        print("  url:", url)
-        if "/id/login" not in url:
-            print("  left the login page — success")
-            return
-        err = str(cdp.eval_js(
-            "document.body.innerText.match(/неверный|incorrect|ошибк|error|"
-            "капч|captcha|верифик|verif/i)"))
-        if "None" not in err:
-            print("  page mentions:", err)
-
-
-def main() -> None:
+def get_creds(item_id: int | None) -> tuple[str, str, int | None]:
+    if item_id:
+        item = api_call("GET", f"/{item_id}").get("item")
+        raw = (item.get("loginData") or {}).get("raw") or ""
+        email, _, password = raw.partition(":")
+        return email, password, item_id
     item = json.loads((HERE / "bought_item.json").read_text(encoding="utf-8"))
     raw = (item.get("loginData") or {}).get("raw") or ""
     email, _, password = raw.partition(":")
+    return email, password, None
+
+
+def login_steps(cdp, email: str, password: str) -> bool:
+    js = SET_INPUTS.replace("EMAIL", json.dumps(email)) \
+                   .replace("PASSWORD", json.dumps(password))
+    for step in range(6):
+        result = str(cdp.eval_js(js, await_promise=True))
+        url = str(cdp.eval_js("location.href"))
+        print(f"  step {step}: {result} | {url}", flush=True)
+        if "/id/login" not in url:
+            return True
+        if "no-inputs" in result:
+            body = str(cdp.eval_js("document.body.innerText.slice(0,300)"))
+            print("  body:", body.replace("\n", " ")[:200])
+        time.sleep(4)
+    return False
+
+
+def run(headless: bool = True) -> tuple[list[dict], bool]:
+    """Launch bridge+chrome, log in, return (cookies, ok)."""
+    email, password, _ = get_creds(CURRENT_ITEM)
     if not password:
-        raise SystemExit("no creds")
+        raise SystemExit("no credentials")
 
-    proc = subprocess.Popen([
-        CHROME, f"--remote-debugging-port={PORT}",
-        "--remote-allow-origins=*",
-        f"--user-data-dir={PROFILE}", "--no-first-run",
-        "--window-size=1100,800",
-        "https://www.epicgames.com/id/login"],
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    profile = tempfile.mkdtemp(prefix="epic_")
+    flags = [CHROME, f"--remote-debugging-port={PORT}",
+             "--remote-allow-origins=*",
+             f"--user-data-dir={profile}", "--no-first-run",
+             "--window-size=1100,800"]
+    if USE_PROXY:
+        from http_socks_bridge import HttpToSocksBridge
+        scheme, rest = PROXY_UPSTREAM.split("://", 1)
+        creds, _, hostport = rest.rpartition("@")
+        user, _, pwd = creds.partition(":")
+        host, _, port = hostport.rpartition(":")
+        bridge = HttpToSocksBridge(host, int(port), user, pwd, BRIDGE_PORT)
+        bridge.start()
+        time.sleep(1)
+        flags.append(f"--proxy-server=http://127.0.0.1:{BRIDGE_PORT}")
+    if headless:
+        flags.append("--headless=new")
+    else:
+        flags.append("--start-minimized")
+    flags.append("https://www.epicgames.com/id/login")
+    proc = subprocess.Popen(flags, creationflags=subprocess.CREATE_NO_WINDOW)
 
-    time.sleep(8)
-    cdp = CDP(page_ws())
     try:
-        # wait for the login form
-        status = ""
-        for _ in range(20):
-            status = str(cdp.eval_js(
-                "!!document.querySelector('input[type=password]')"))
-            if status == "True":
+        time.sleep(6)
+        cdp = CDP(page_ws())
+        cdp.call("Page.navigate", {"url": "https://www.epicgames.com/id/login"})
+        ok = False
+        for _ in range(40):
+            if str(cdp.eval_js(
+                    "!!document.querySelector('input[type=password],"
+                    "input[type=email]')")) == "True":
                 break
             time.sleep(1)
-        print("form ready:", status)
-
-        js = ""
-        login_steps(cdp, email, password)
-
-        time.sleep(4)
-        text = str(cdp.eval_js("document.body.innerText.slice(0, 400)"))
-        print("--- page text ---")
-        print(text)
-        shot = cdp.call("Page.captureScreenshot", {"format": "jpeg",
-                                                   "quality": 70})
-        (HERE / "epic_login_shot.jpg").write_bytes(
-            base64.b64decode(shot["data"]))
-        print("screenshot -> epic_login_shot.jpg")
-
-        # wait for session cookies
-        cookies = {}
-        raw_cookies = []
-        for _ in range(15):
+        ok = login_steps(cdp, email, password)
+        raw = []
+        for _ in range(10):
             time.sleep(2)
             res = cdp.call("Storage.getCookies")
-            raw_cookies = res.get("cookies", [])
-            cookies = {c["name"]: c["value"] for c in raw_cookies}
-            names = [c["name"] for c in res.get("cookies", [])]
-            print("cookies:", names)
-            if "EPIC_SSO" in cookies or "EPIC_BEARER_TOKEN" in cookies \
-                    or "sid" in cookies:
+            raw = res.get("cookies", [])
+            names = {c["name"] for c in raw}
+            if {"EPIC_SSO", "EPIC_BEARER_TOKEN"} & names:
                 break
-            url = str(cdp.eval_js("location.href"))
-            print("url:", url)
-
-        header = "; ".join(f"{k}={v}" for k, v in cookies.items())
-        (HERE / "epic_cookies.txt").write_text(header, encoding="utf-8")
-        # lzt.market expects the Cookie-Editor JSON export format
-        json_export = [{"name": c["name"], "value": c["value"],
-                        "domain": c.get("domain", ""),
-                        "path": c.get("path", "/")}
-                       for c in raw_cookies]
-        (HERE / "epic_cookies.json").write_text(
-            json.dumps(json_export, ensure_ascii=False), encoding="utf-8")
-        print(f"saved {len(cookies)} cookies -> epic_cookies.txt/.json")
-    finally:
         cdp.close()
-        time.sleep(2)
+        return raw, ok
+    finally:
         proc.terminate()
+
+
+def main() -> None:
+    global CURRENT_ITEM
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    CURRENT_ITEM = int(arg) if arg and arg.isdigit() else None
+    email, _, iid = get_creds(CURRENT_ITEM)
+
+    raw, ok = run(headless=True)
+    names = {c["name"] for c in raw}
+    if "EPIC_BEARER_TOKEN" not in names:
+        print("[harvest] headless failed (no bearer), headed fallback",
+              flush=True)
+        raw, ok = run(headless=False)
+        names = {c["name"] for c in raw}
+
+    if "EPIC_BEARER_TOKEN" not in names:
+        raise SystemExit(f"harvest FAILED for {email}: cookies {sorted(names)}")
+
+    out = HERE / f"epic_cookies_{iid}.json" if iid else HERE / "epic_cookies.json"
+    json_export = [{"name": c["name"], "value": c["value"],
+                    "domain": c.get("domain", ""), "path": c.get("path", "/")}
+                   for c in raw]
+    out.write_text(json.dumps(json_export, ensure_ascii=False),
+                   encoding="utf-8")
+    print(f"HARVESTED {len(raw)} cookies for {email} -> {out.name}")
 
 
 if __name__ == "__main__":
