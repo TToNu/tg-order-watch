@@ -731,11 +731,15 @@ def cycle(seen: set, st: dict) -> None:
     # cycle arrive (tiny response, fast even via the narrow proxy). Price
     # history for ALL lots is collected separately by the price dumper.
     now_epoch = int(time.time())
-    since = int(st.get("last_new_scan", now_epoch - 120)) - 30
+    # Clamp to max 60s lookback: the Georgia proxy truncates large JSON
+    # responses; at 5s cycles we only need the last minute at most
+    since = max(int(st.get("last_new_scan", now_epoch - 30)) - 10,
+                now_epoch - 60)
     for endpoint, detector in (("/fortnite", detect_game),
                                ("/epicgames", detect_game_generic)):
         res = api_call("GET", endpoint,
                        {"published_after": str(since),
+                        "pmin": "1", "pmax": str(MAX_BUY_PRICE),
                         "order_by": "pdate_to_down", "page": "1"})
         for it in res.get("items", []):
             iid = it.get("item_id")
