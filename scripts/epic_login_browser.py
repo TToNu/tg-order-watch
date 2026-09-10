@@ -29,7 +29,10 @@ from lzt import api_call
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 PORT = 9333
 BRIDGE_PORT = 9340
-PROXY_UPSTREAM = "http://10.6.7.1:40000"
+# Epic blocks most datacenter/residential proxies (Cloudflare 403); the
+# direct home connection passes Turnstile. Only override if a proven
+# Epic-compatible proxy exists.
+PROXY_UPSTREAM = ""
 # Epic throws a hard security checkpoint at datacenter IPs — direct home
 # connection passes Turnstile silently. Set EPIC_NOPROXY=1 to skip the proxy.
 import os
