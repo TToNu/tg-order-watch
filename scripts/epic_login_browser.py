@@ -30,15 +30,14 @@ CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 PORT = 9333
 BRIDGE_PORT = 9340
 # Epic blocks most datacenter/residential proxies (Cloudflare 403); the
-# direct home connection passes Turnstile. Only override if a proven
-# Epic-compatible proxy exists.
-PROXY_UPSTREAM = ""
+# direct home connection passes Turnstile. Georgia SOCKS5 is the fallback
+# when direct fails (Chrome can solve CF challenges that curl can't).
+PROXY_UPSTREAM = "socks5://bpuser-Bh1RGb3X:rrXaClMo7pCfIgMQjifv_country-GE@residential-x.bpproxy.at:1002"
 # Epic throws a hard security checkpoint at datacenter IPs — direct home
 # connection passes Turnstile silently. Set EPIC_NOPROXY=1 to skip the proxy.
 import os
 USE_PROXY = os.environ.get("EPIC_NOPROXY", "").strip() != "1" and bool(
     PROXY_UPSTREAM)
-
 
 class CDP:
     def __init__(self, ws_url: str):
@@ -294,7 +293,10 @@ def run(headless: bool = True) -> tuple[list[dict], bool]:
                 except ValueError:
                     pass
 
-    profile = tempfile.mkdtemp(prefix="epic_")
+    # Shared profile: Cloudflare/security checkpoint trust persists across
+    # runs, so subsequent logins skip the interstitial page
+    profile = str(HERE / ".chrome_epic_persist")
+    Path(profile).mkdir(exist_ok=True)
     flags = [CHROME, f"--remote-debugging-port={PORT}",
              "--remote-allow-origins=*",
              f"--user-data-dir={profile}", "--no-first-run",
@@ -322,6 +324,20 @@ def run(headless: bool = True) -> tuple[list[dict], bool]:
     try:
         time.sleep(6)
         cdp = CDP(page_ws())
+        # Clear previous Epic session cookies (keep Cloudflare trust cookies)
+        cdp.call("Network.enable", {})
+        cdp.eval_js("""
+            document.cookie.split(';').forEach(c => {
+                const name = c.split('=')[0].trim();
+                if (name.startsWith('EPIC_') || name === '_epicSID') {
+                    document.cookie = name + '=;expires=Thu, 01 Jan 1970'
+                        + ' 00:00:00 GMT;path=/;domain=.epicgames.com';
+                }
+            });
+        """)
+        cdp.call("Page.navigate",
+                 {"url": "https://www.epicgames.com/id/logout"})
+        time.sleep(2)
         cdp.call("Page.navigate", {"url": "https://www.epicgames.com/id/login"})
         ok = False
         for _ in range(40):
