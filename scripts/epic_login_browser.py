@@ -143,8 +143,8 @@ def login_steps(cdp, email: str, password: str,
         body = str(cdp.eval_js("document.body.innerText.slice(0,300)"))
         url = str(cdp.eval_js("location.href"))
 
-        # 2FA setup page: get code from email and enter it
-        if "/mfa/" in url or "двухфакторн" in body.lower() \
+        # 2FA page: check both /mfa/ and /mfa? (no trailing slash)
+        if "/mfa" in url or "двухфакторн" in body.lower() \
                 or "2fa" in body.lower():
             print(f"  [2FA] detected at {url}", flush=True)
             if email_pass:
