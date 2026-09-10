@@ -520,23 +520,20 @@ def fetch_paid_emails() -> dict[int, str]:
         except ValueError:
             cache = {}
     try:
-        raw = api_call("GET", "/user/orders/download",
-                       {"show": "paid", "format": "custom",
-                        "custom_format":
-                            "{item_id}|{login}|{password}|{email_login_data}|"
-                            "{title}"})
+        text = api_call("GET", "/user/orders/download",
+                        {"show": "paid", "format": "custom",
+                         "custom_format": "{item_id}|{email}|{email_password}"},
+                        raw=True)
     except RuntimeError as e:
         log(f"[emails] download failed: {str(e)[:120]}")
         return cache
-    text = raw if isinstance(raw, str) else json.dumps(raw)
     for ln in text.splitlines():
         parts = ln.split("|")
-        if len(parts) >= 4 and parts[0].strip().isdigit():
-            iid = int(parts[0])
-            email_raw = parts[3].strip()
-            if email_raw and ":" in email_raw:
-                cache[iid] = email_raw
-    cache_file.write_text(json.dumps(cache), encoding="utf-8")
+        if len(parts) >= 3 and parts[0].strip().isdigit() \
+                and parts[2].strip():
+            cache[int(parts[0])] = f"{parts[1].strip()}:{parts[2].strip()}"
+    cache_file.write_text(
+        json.dumps({str(k): v for k, v in cache.items()}), encoding="utf-8")
     return cache
 
 

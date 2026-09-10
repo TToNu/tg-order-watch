@@ -17,7 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lzt import api_call
 
-DBD_RE = re.compile(r"(dead\s*by\s*day\s*light|dbd|\bdaylight\b|дбд)", re.I)
+DBD_RE = re.compile(r"(dead\s*by\s*day\s*light|\bdbd\b|\bdaylight\b|\bдбд\b)",
+                     re.I)
 
 # Resale portfolio: games NEVER given free on the Epic Games Store —
 # only those carry transferable value in an Epic ownership record.
@@ -29,6 +30,8 @@ GAME_TARGETS = [
     ("Cyberpunk 2077", re.compile(r"cyberpunk\s*2077", re.I)),
     ("Dead by Daylight", DBD_RE),
     ("Kerbal Space Program", re.compile(r"kerbal\s*space", re.I)),
+    ("EA SPORTS FC 26", re.compile(r"ea\s*sports\s*fc\s*2[56]|\bfc\s*26\b",
+                                   re.I)),
 ]
 STATE = Path(__file__).with_name(".flip_seen.json")
 
@@ -71,6 +74,7 @@ def detect_game_generic(obj) -> tuple[str, str] | None:
     """Scan every string in an arbitrary item JSON (epicgames-section lots
     keep owned-game lists in nested fields) for portfolio games."""
     texts: list[str] = []
+    hash_like = re.compile(r"^[0-9a-f]{16,}$")
 
     def walk(node) -> None:
         if isinstance(node, dict):
@@ -82,7 +86,10 @@ def detect_game_generic(obj) -> tuple[str, str] | None:
             for v in node:
                 walk(v)
         elif isinstance(node, str):
-            texts.append(node)
+            # game app_ids are md5-like hashes: 'dbd' inside one once caused
+            # a false portfolio hit — never scan hash-shaped strings
+            if not hash_like.match(node.strip()):
+                texts.append(node)
 
     walk(obj)
     for game, rx in GAME_TARGETS:

@@ -145,7 +145,7 @@ def solve_challenge(html: str) -> None:
 
 
 def api_call(method: str, path: str, params: dict | None = None,
-             data: dict | None = None) -> dict | list:
+             data: dict | None = None, raw: bool = False):
     code, body = http(method, API + path, params,
                       json.dumps(data) if data else None)
     if "_dfjs" in body and "<html" in body[:200]:
@@ -158,6 +158,8 @@ def api_call(method: str, path: str, params: dict | None = None,
         raise RuntimeError(f"HTTP {code}: {body[:300]}")
     if code == 0:
         raise RuntimeError("transport failed after retries")
+    if raw:
+        return body
     return json.loads(body)
 
 

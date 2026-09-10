@@ -109,15 +109,26 @@ SET_INPUTS = """
 
 
 def get_creds(item_id: int | None) -> tuple[str, str, int | None]:
+    raw = ""
     if item_id:
         item = api_call("GET", f"/{item_id}").get("item")
         raw = (item.get("loginData") or {}).get("raw") or ""
-        email, _, password = raw.partition(":")
-        return email, password, item_id
-    item = json.loads((HERE / "bought_item.json").read_text(encoding="utf-8"))
-    raw = (item.get("loginData") or {}).get("raw") or ""
+        if not raw:
+            # discount auto-buys hide loginData even from the buyer; the
+            # paid-orders export holds email creds (email pass == account
+            # pass for these autoregs)
+            cache = HERE / "item_emails.json"
+            if cache.exists():
+                creds = json.loads(
+                    cache.read_text(encoding="utf-8")).get(str(item_id), "")
+                if creds:
+                    raw = creds
+    else:
+        item = json.loads((HERE / "bought_item.json")
+                          .read_text(encoding="utf-8"))
+        raw = (item.get("loginData") or {}).get("raw") or ""
     email, _, password = raw.partition(":")
-    return email, password, None
+    return email, password, item_id
 
 
 def login_steps(cdp, email: str, password: str) -> bool:
@@ -189,6 +200,9 @@ def run(headless: bool = True) -> tuple[list[dict], bool]:
                 break
         cdp.close()
         return raw, ok
+    except Exception as e:  # noqa: BLE001 - browser died mid-way
+        print(f"  [harvest] {type(e).__name__}: {e}", flush=True)
+        return [], False
     finally:
         proc.terminate()
 
