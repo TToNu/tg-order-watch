@@ -134,25 +134,37 @@ def get_creds(item_id: int | None) -> tuple[str, str, int | None]:
     return email, password, item_id
 
 
-def login_steps(cdp, email: str, password: str) -> bool:
+def login_steps(cdp, email: str, password: str,
+                email_pass: str = "") -> bool:
+    """Login + handle 2FA via IMAP code retrieval."""
     js = SET_INPUTS.replace("EMAIL", json.dumps(email)) \
                    .replace("PASSWORD", json.dumps(password))
-    for step in range(10):
-        # Handle 2FA setup interstitial: skip it to get to the account
+    for step in range(15):
         body = str(cdp.eval_js("document.body.innerText.slice(0,300)"))
         url = str(cdp.eval_js("location.href"))
+
+        # 2FA setup page: get code from email and enter it
         if "/mfa/" in url or "двухфакторн" in body.lower() \
                 or "2fa" in body.lower():
+            print(f"  [2FA] detected at {url}", flush=True)
+            if email_pass:
+                ok = handle_2fa_flow(cdp, email, email_pass)
+                if ok:
+                    continue  # re-check URL after 2FA
+            # Fallback: try to skip
             skip = str(cdp.eval_js(
-                "(() => { const btns = [...document.querySelectorAll('button,a')"
-                ",*')].filter(b => /позже|пропустить|skip|later|not now|не сейчас/i"
-                ".test(b.innerText || b.title || ''));"
-                "if (btns.length) { btns[0].click(); return 'clicked:' +"
-                " btns[0].innerText.slice(0,20); } return 'no-skip-btn'; })()"))
-            print(f"  2FA page: {skip}", flush=True)
-            if "no-skip" not in skip:
+                "(() => { const b = [...document.querySelectorAll("
+                "'button,a')].find(x => /позже|пропустить|skip|later|"
+                "не сейчас/i.test(x.innerText||''));"
+                "if (b) { b.click(); return 'skipped'; }"
+                "return 'no-skip'; })()"))
+            print(f"  [2FA] skip attempt: {skip}", flush=True)
+            if "skipped" in skip:
                 time.sleep(3)
                 continue
+            time.sleep(4)
+            continue
+
         result = str(cdp.eval_js(js, await_promise=True))
         print(f"  step {step}: {result} | {url}", flush=True)
         if "/id/login" not in url and "/mfa/" not in url:
@@ -163,11 +175,94 @@ def login_steps(cdp, email: str, password: str) -> bool:
     return False
 
 
+def handle_2fa_flow(cdp, email_addr: str, email_pass: str) -> bool:
+    """Request 2FA code, fetch from IMAP, enter in browser."""
+    print("  [2FA] requesting code...", flush=True)
+
+    # Click send code button
+    cdp.eval_js("""
+        (() => { const b = [...document.querySelectorAll('button')]
+            .find(x => /отправить|send|получить код/i.test(x.innerText||''));
+            if (b) b.click(); })()""")
+    time.sleep(5)
+
+    # Fetch code from IMAP
+    from imap_fetch import get_epic_code
+    code = None
+    for attempt in range(3):
+        code = get_epic_code(email_addr, email_pass, wait_seconds=5)
+        if code:
+            break
+        print(f"  [2FA] waiting for code (attempt {attempt+1})...", flush=True)
+        time.sleep(8)
+
+    if not code:
+        print("  [2FA] FAILED: no code in email", flush=True)
+        return False
+
+    print(f"  [2FA] got code: {code}", flush=True)
+
+    # Enter code in the input field (plain string, no f-string escaping)
+    js_enter = (
+        "(() => {"
+        " const inputs = [...document.querySelectorAll("
+        "'input[type=text],input:not([type])')];"
+        " let el = inputs.find(i => i.maxLength === 6);"
+        " if (!el) el = inputs.find(i => /kod|code/i"
+        ".test(i.placeholder || ''));"
+        " if (!el) el = inputs[0];"
+        " if (!el) return 'no-input';"
+        " const proto = HTMLInputElement.prototype;"
+        " Object.getOwnPropertyDescriptor(proto, 'value')"
+        ".set.call(el, '" + code + "');"
+        " el.dispatchEvent(new Event('input', {bubbles: true}));"
+        " el.dispatchEvent(new Event('change', {bubbles: true}));"
+        " return 'entered';"
+        "})()"
+    )
+    entered = str(cdp.eval_js(js_enter))
+    print(f"  [2FA] enter: {entered}", flush=True)
+    if "no-input" in entered:
+        return False
+
+    # Submit
+    time.sleep(1)
+    cdp.eval_js("""
+        (() => { const b = [...document.querySelectorAll('button')]
+            .find(x => /продолжить|continue|далее|подтвердить|verify/i
+            .test(x.innerText||''));
+            if (b) b.click();
+            else { const f = document.querySelector('form');
+                   if (f) f.requestSubmit(); } })()""")
+    print("  [2FA] submitted, waiting...", flush=True)
+    time.sleep(5)
+    return True
+
+
 def run(headless: bool = True) -> tuple[list[dict], bool]:
     """Launch bridge+chrome, log in, return (cookies, ok)."""
-    email, password, _ = get_creds(CURRENT_ITEM)
+    email, password, iid = get_creds(CURRENT_ITEM)
     if not password:
         raise SystemExit("no credentials")
+
+    # Email password for 2FA code retrieval (may differ from account pass)
+    email_pass = password  # default: same
+    if iid:
+        item = api_call("GET", f"/{iid}").get("item", {})
+        el = item.get("emailLoginData") or {}
+        if el.get("password"):
+            email_pass = el["password"]
+        else:
+            # Try the paid-orders cache
+            cache = HERE / "item_emails.json"
+            if cache.exists():
+                try:
+                    creds = json.loads(
+                        cache.read_text(encoding="utf-8")).get(str(iid), "")
+                    if creds and ":" in creds:
+                        email_pass = creds.split(":", 1)[1]
+                except ValueError:
+                    pass
 
     profile = tempfile.mkdtemp(prefix="epic_")
     flags = [CHROME, f"--remote-debugging-port={PORT}",
@@ -205,7 +300,7 @@ def run(headless: bool = True) -> tuple[list[dict], bool]:
                     "input[type=email]')")) == "True":
                 break
             time.sleep(1)
-        ok = login_steps(cdp, email, password)
+        ok = login_steps(cdp, email, password, email_pass)
         raw = []
         for _ in range(10):
             time.sleep(2)
