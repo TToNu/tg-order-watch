@@ -19,8 +19,23 @@ sys.path.insert(0, str(HERE))
 from relist_direct import curl_json, API
 
 CLIPROXY_API = "http://192.168.56.1:1998/api"
-PORT_START = 40000
+PORT_START = 40003  # ports below this are often dead
 COUNTRIES = ["US", "DE", "GB", "NL", "FR"]
+
+
+def find_alive_ports(count: int, start: int = PORT_START) -> list[int]:
+    """Scan ClipProxy ports and return the first N alive ones."""
+    alive = []
+    port = start
+    while len(alive) < count and port < start + 20:
+        proxy = get_proxy(port, "US")
+        if proxy and test_proxy(proxy):
+            alive.append(port)
+            print(f"  port {port}: ALIVE", flush=True)
+        else:
+            print(f"  port {port}: dead", flush=True)
+        port += 1
+    return alive
 
 
 def get_proxy(port: int, country: str = "US") -> str:
@@ -49,25 +64,23 @@ def test_proxy(proxy_url: str) -> bool:
 
 
 def harvest_and_relist(iid: int, game: str, price: float,
-                       port: int, country: str) -> bool:
-    """Full pipeline: harvest cookies + disable 2FA + relist."""
-    proxy_url = get_proxy(port, country)
-    if not proxy_url:
-        print(f"  ❌ proxy API returned nothing for port {port}", flush=True)
-        return False
+                       attempt: int = 0) -> bool:
+    """Full pipeline: harvest cookies + disable 2FA + relist.
+    Retries with different connection methods on failure."""
+    # Try different connection methods per attempt
+    if attempt == 0:
+        proxy_env = ""  # direct (works ~50% of the time)
+    elif attempt == 1:
+        proxy_env = "http://192.168.56.1:40003"
+    else:
+        proxy_env = ""  # direct again (checkpoint is random)
 
-    print(f"  proxy: {proxy_url} ({country})", flush=True)
-    if not test_proxy(proxy_url):
-        print(f"  ❌ proxy dead", flush=True)
-        return False
+    print(f"  attempt {attempt + 1}: "
+          f"{'direct' if not proxy_env else proxy_env}", flush=True)
 
-    print(f"  IP: {subprocess.run(
-        ['curl', '-s', '-m', '8', '-x', proxy_url, 'https://api.ipify.org'],
-        capture_output=True, text=True, timeout=15).stdout.strip()}", flush=True)
-
-    # Run harvester with this specific proxy
+    # Run harvester
     print(f"  harvesting cookies...", flush=True)
-    env = {**os.environ, "EPIC_PROXY": proxy_url}
+    env = {**os.environ, "EPIC_PROXY": proxy_env}
     result = subprocess.run(
         [sys.executable, str(HERE / "epic_login_browser.py"), str(iid)],
         env=env, capture_output=True, text=True, timeout=300, cwd=str(HERE))
@@ -139,19 +152,24 @@ def main():
         else:
             sys.exit(f"item {iid} not in pending_relists")
 
-    print(f"CUSTOM CHECKER: {len(pending)} items\n", flush=True)
+    print(f"CUSTOM CHECKER: {len(pending)} items", flush=True)
 
     success = 0
     for i, row in enumerate(pending):
         iid = row["item_id"]
         game = row.get("game", "Epic Games")
         price = row.get("price", 20)
-        port = PORT_START + i  # unique port per account
-        country = COUNTRIES[i % len(COUNTRIES)]
 
-        print(f"[{iid}] {game} (bought {price}₽)", flush=True)
+        print(f"\n[{iid}] {game} (bought {price}₽)", flush=True)
 
-        ok = harvest_and_relist(iid, game, price, port, country)
+        ok = False
+        for attempt in range(3):  # up to 3 attempts per account
+            ok = harvest_and_relist(iid, game, price, attempt)
+            if ok:
+                break
+            print(f"  retrying... ({attempt + 1}/3)", flush=True)
+            time.sleep(5)
+
         if ok:
             # Remove from pending
             st = json.loads(
@@ -162,9 +180,8 @@ def main():
             (BASE / ".flip_state.json").write_text(
                 json.dumps(st, ensure_ascii=False), encoding="utf-8")
             success += 1
-
-        # Brief pause between accounts
-        time.sleep(5)
+        else:
+            print(f"  ❌ all 3 attempts failed", flush=True)
 
     print(f"\nDONE: {success}/{len(pending)} listed", flush=True)
 
