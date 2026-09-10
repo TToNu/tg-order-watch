@@ -35,11 +35,17 @@ MIN_MARGIN = 40             # listing target minus buy price
 MARGIN_RATIO = 1.5          # sell price must be >= 1.5x the buy price
 FEE_BUFFER = 5              # marketplace fee / repricing safety
 BALANCE_FLOOR = 5           # keep at least this much on the balance
-# Per-game caps: GTA V without Social Club access is a higher-risk resale
-# (buyer disputes), so we limit exposure on the first purchases.
-# The market sells "БЕЗ ДОСТУПА К SC" accounts at ~200-230₽ standard.
+# Per-game caps: risk-based pricing.
+# Games requiring external launchers (SC, EA App) carry dispute risk if the
+# launcher account is already linked — capped low like GTA V.
+# Games without launcher risk can afford higher caps but stay conservative.
 GAME_PRICE_CAPS = {
-    "GTA V": 30,   # worst case: SC linked, sell as "без SC" at ~200₽
+    "GTA V": 30,                    # SC risk, sell as "без SC" ~200₽
+    "Red Dead Redemption 2": 30,    # SAME Rockstar SC risk as GTA V
+    "Cyberpunk 2077": 50,           # no launcher risk, but conservative
+    "Dead by Daylight": 59,         # already handled via GAME_MIN_MARGIN
+    "Kerbal Space Program": 25,     # low-value game (~50₽ resale)
+    "EA SPORTS FC 26": 30,          # EA App risk (like SC for Rockstar)
 }
 # Per-game minimum margin override (default MIN_MARGIN=40)
 # DBD is a high-liquidity market: smaller margin is offset by fast turnover
