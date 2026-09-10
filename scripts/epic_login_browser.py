@@ -32,7 +32,7 @@ BRIDGE_PORT = 9340
 # Epic blocks most datacenter/residential proxies (Cloudflare 403); the
 # direct home connection passes Turnstile. Georgia SOCKS5 is the fallback
 # when direct fails (Chrome can solve CF challenges that curl can't).
-PROXY_UPSTREAM = "socks5://bpuser-Bh1RGb3X:rrXaClMo7pCfIgMQjifv_country-GE@residential-x.bpproxy.at:1002"
+PROXY_UPSTREAM = "http://192.168.56.1:40000"
 # Epic throws a hard security checkpoint at datacenter IPs — direct home
 # connection passes Turnstile silently. Set EPIC_NOPROXY=1 to skip the proxy.
 import os
@@ -172,6 +172,40 @@ def login_steps(cdp, email: str, password: str,
             print("  body:", body.replace("\n", " ")[:200])
         time.sleep(4)
     return False
+
+
+def disable_2fa(cdp) -> bool:
+    """Navigate to account security settings and disable 2FA if enabled."""
+    print("  [2FA-off] navigating to security settings...", flush=True)
+    cdp.call("Page.navigate",
+             {"url": "https://www.epicgames.com/account/security"})
+    time.sleep(5)
+    body = str(cdp.eval_js("document.body.innerText.slice(0,500)"))
+    print(f"  [2FA-off] page: {body[:200]}", flush=True)
+
+    # Look for 2FA toggle/disable buttons
+    result = str(cdp.eval_js("""
+        (() => {
+            const btns = [...document.querySelectorAll('button,a,[role=switch]')];
+            // Find disable button for email 2FA
+            const disable = btns.find(b =>
+                /отключить|disable|выключить|deactivate/i
+                .test(b.innerText || b.getAttribute('aria-label') || ''));
+            if (disable) {
+                disable.click();
+                return 'clicked:' + (disable.innerText ||
+                    disable.getAttribute('aria-label')).slice(0,30);
+            }
+            // Check if 2FA is already off
+            const txt = document.body.innerText.toLowerCase();
+            if (txt.includes('не включена') || txt.includes('not enabled') ||
+                txt.includes('disabled')) {
+                return 'already-off';
+            }
+            return 'no-button';
+        })()"""))
+    print(f"  [2FA-off] {result}", flush=True)
+    return "off" in result or "already" in result
 
 
 def handle_2fa_flow(cdp, email_addr: str, email_pass: str) -> bool:
