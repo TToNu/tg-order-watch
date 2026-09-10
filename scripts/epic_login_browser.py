@@ -32,7 +32,11 @@ BRIDGE_PORT = 9340
 # Epic blocks most datacenter/residential proxies (Cloudflare 403); the
 # direct home connection passes Turnstile. Georgia SOCKS5 is the fallback
 # when direct fails (Chrome can solve CF challenges that curl can't).
-PROXY_UPSTREAM = "http://192.168.56.1:40000"
+# Default proxy — can be overridden per-run via EPIC_PROXY env var.
+# Each ClipProxy port = different exit IP, giving every account a fresh
+# identity (no accumulated security flags from previous attempts).
+DEFAULT_PROXY = "http://192.168.56.1:40000"
+PROXY_UPSTREAM = os.environ.get("EPIC_PROXY", DEFAULT_PROXY).strip()
 # Epic throws a hard security checkpoint at datacenter IPs — direct home
 # connection passes Turnstile silently. Set EPIC_NOPROXY=1 to skip the proxy.
 import os
@@ -432,16 +436,16 @@ def run(headless: bool = True) -> tuple[list[dict], bool]:
             time.sleep(1)
         ok = login_steps(cdp, email, password, email_pass)
 
-        # Post-login actions: disable 2FA + unlink Social Club
+        # Post-login actions: disable 2FA + unlink SC.
+        # Run even if login_steps returned False — persistent profile
+        # cookies may still give us an active session.
         sc_unlinked = False
-        if ok:
-            # Disable 2FA (prevents market checker failures)
+        if ok or "epicgames.com/account" in str(
+                cdp.eval_js("location.href")):
             disable_2fa(cdp)
-            # Unlink Rockstar Social Club (increases GTA V value +50₽)
             sc_unlinked, sc_status = unlink_social_club(cdp)
             if sc_unlinked:
                 print(f"  [SC] SUCCESS: {sc_status}", flush=True)
-                # Marker for relist_direct to use premium pricing
                 (HERE / f"sc_free_{iid}.marker").write_text(
                     "unlinked", encoding="utf-8")
 
