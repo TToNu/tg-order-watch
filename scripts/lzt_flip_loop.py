@@ -37,14 +37,42 @@ FEE_BUFFER = 5              # marketplace fee / repricing safety
 BALANCE_FLOOR = 5           # keep at least this much on the balance
 # Per-game caps: GTA V without Social Club access is a higher-risk resale
 # (buyer disputes), so we limit exposure on the first purchases.
+# The market sells "БЕЗ ДОСТУПА К SC" accounts at ~200-230₽ standard.
 GAME_PRICE_CAPS = {
-    "GTA V": 30,
+    "GTA V": 30,   # worst case: SC linked, sell as "без SC" at ~200₽
 }
 # Per-game minimum margin override (default MIN_MARGIN=40)
 # DBD is a high-liquidity market: smaller margin is offset by fast turnover
 GAME_MIN_MARGIN = {
     "Dead by Daylight": 20,  # buy ≤68, sell at p25 ≈88 → ROI 1.29x
 }
+
+
+def gta_v_sc_check(item: dict) -> str:
+    """Detect Social Club status from seller's title/description.
+    Returns 'unlinked', 'linked', or 'unknown'."""
+    text = " ".join(filter(None, [
+        item.get("title", ""), item.get("description", ""),
+        item.get("title_en", ""), item.get("description_en", "")
+    ])).lower()
+    if "не привязан" in text or "no sc" in text \
+            or "without social" in text or "sc not linked" in text:
+        return "unlinked"
+    if "без доступа" in text or "без social" in text \
+            or "привязан social" in text or "без дост" in text:
+        return "linked"
+    return "unknown"
+
+
+def dynamic_gta_v_cap(item: dict, target: float) -> float:
+    """GTA V price cap based on Social Club risk:
+    - SC linked/unknown: 30₽ (low risk, sell as 'без SC' at ~200₽)
+    - SC not linked: 50₽ (premium, buyer links own SC → worth more)
+    """
+    sc = gta_v_sc_check(item)
+    if sc == "unlinked":
+        return min(target - MIN_MARGIN - FEE_BUFFER, 50)
+    return GAME_PRICE_CAPS["GTA V"]  # 30₽ for linked/unknown
 RESELL_CATEGORY = 12        # Epic Games
 PRICE_DUMP_EVERY = 120       # cycles between full price snapshots (~10 min)
 
@@ -454,7 +482,14 @@ def relist(bought: dict, buy_price: float, game: str) -> tuple[bool, str]:
 def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
     price = float(it.get("price", 999))
     floor, target, med = resale_stats(game)
-    cap = max_payable(target, game)
+    if target <= 0:
+        return
+
+    # Dynamic cap: GTA V uses SC-aware pricing
+    if game == "GTA V":
+        cap = dynamic_gta_v_cap(it, target)
+    else:
+        cap = max_payable(target, game)
     if price > cap:
         log(f"[guard] {it['item_id']} [{game}] price {price:.0f} > "
             f"cap {cap:.0f} (target {target:.0f})")
