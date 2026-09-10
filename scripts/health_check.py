@@ -101,14 +101,22 @@ def main() -> None:
     if ok:
         report.append("PASS notify channel")
     else:
-        report.append(f"ACTION notify channel broken ({info}) -> "
-                      "monitor restart")
+        # Try rotating the proxy country before restarting the monitor
+        report.append(f"ACTION notify channel broken ({info}) -> proxy rotate")
+        try:
+            r = subprocess.run(
+                ["python", str(SCRIPTS / "proxy_manager.py"), "rotate"],
+                capture_output=True, text=True, timeout=120, cwd=str(SCRIPTS))
+            report.append(f"  rotate: {r.stdout.strip()[-200:]}")
+        except Exception as e:  # noqa: BLE001
+            report.append(f"  rotate failed: {e}")
+        # restart monitor on the (hopefully) new proxy
         kill_pattern("monitor.py")
         time.sleep(12)
         start_window("tg-order-watch", "monitor_keepalive.cmd")
         time.sleep(25)
         ok2, info2 = check_channel()
-        report.append("PASS notify after restart" if ok2
+        report.append("PASS notify after rotate+restart" if ok2
                       else f"FAIL notify still broken: {info2}")
 
     # market API + balance
