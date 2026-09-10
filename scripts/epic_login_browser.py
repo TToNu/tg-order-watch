@@ -177,6 +177,14 @@ def login_steps(cdp, email: str, password: str,
 
 def handle_2fa_flow(cdp, email_addr: str, email_pass: str) -> bool:
     """Request 2FA code, fetch from IMAP, enter in browser."""
+    # Mark ALL old emails as seen so IMAP only finds the fresh code
+    try:
+        from imap_clear import mark_all_seen
+        old = mark_all_seen(email_addr, email_pass)
+        print(f"  [2FA] marked {old} old emails as seen", flush=True)
+    except Exception as e:
+        print(f"  [2FA] clear failed: {e}", flush=True)
+
     print("  [2FA] requesting code...", flush=True)
 
     # Click send code button
@@ -197,27 +205,49 @@ def handle_2fa_flow(cdp, email_addr: str, email_pass: str) -> bool:
         time.sleep(8)
 
     if not code:
-        print("  [2FA] FAILED: no code in email", flush=True)
+        # Check for manually provided code (EPIC_2FA_CODE env var)
+        import os
+        manual = os.environ.get("EPIC_2FA_CODE", "").strip()
+        if manual:
+            code = manual
+            print(f"  [2FA] using manual code: {code}", flush=True)
+
+    if not code:
+        print("  [2FA] FAILED: no code in email or env", flush=True)
         return False
 
     print(f"  [2FA] got code: {code}", flush=True)
 
-    # Enter code in the input field (plain string, no f-string escaping)
+    # Enter code in the input fields (Epic uses 6 individual digit boxes)
     js_enter = (
         "(() => {"
         " const inputs = [...document.querySelectorAll("
-        "'input[type=text],input:not([type])')];"
-        " let el = inputs.find(i => i.maxLength === 6);"
-        " if (!el) el = inputs.find(i => /kod|code/i"
-        ".test(i.placeholder || ''));"
-        " if (!el) el = inputs[0];"
-        " if (!el) return 'no-input';"
+        "'input[type=text],input[type=tel],input[type=number,"
+        "input:not([type])')].filter(i => !i.disabled && !i.readOnly);"
+        " if (inputs.length === 0) return 'no-input';"
         " const proto = HTMLInputElement.prototype;"
-        " Object.getOwnPropertyDescriptor(proto, 'value')"
-        ".set.call(el, '" + code + "');"
-        " el.dispatchEvent(new Event('input', {bubbles: true}));"
-        " el.dispatchEvent(new Event('change', {bubbles: true}));"
-        " return 'entered';"
+        " const setter = Object.getOwnPropertyDescriptor("
+        "proto, 'value').set;"
+        " if (inputs.length >= 6) {"
+        "  // 6 individual digit boxes"
+        "  const digits = '" + code + "'.split('');"
+        "  for (let j = 0; j < 6 && j < inputs.length; j++) {"
+        "   setter.call(inputs[j], digits[j]);"
+        "   inputs[j].dispatchEvent(new Event('input',"
+        "{bubbles: true}));"
+        "   inputs[j].dispatchEvent(new Event('change',"
+        "{bubbles: true}));"
+        "  }"
+        "  return 'entered-digits';"
+        " } else {"
+        "  // single text field"
+        "  setter.call(inputs[0], '" + code + "');"
+        "  inputs[0].dispatchEvent(new Event('input',"
+        "{bubbles: true}));"
+        "  inputs[0].dispatchEvent(new Event('change',"
+        "{bubbles: true}));"
+        "  return 'entered-single';"
+        " }"
         "})()"
     )
     entered = str(cdp.eval_js(js_enter))
