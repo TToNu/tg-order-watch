@@ -302,42 +302,37 @@ def handle_2fa_flow(cdp, email_addr: str, email_pass: str) -> bool:
 
     print(f"  [2FA] got code: {code}", flush=True)
 
-    # Enter code in the input fields (Epic uses 6 individual digit boxes)
-    js_enter = (
-        "(() => {"
-        " const inputs = [...document.querySelectorAll("
-        "'input[type=text],input[type=tel],input[type=number,"
-        "input:not([type])')].filter(i => !i.disabled && !i.readOnly);"
-        " if (inputs.length === 0) return 'no-input';"
-        " const proto = HTMLInputElement.prototype;"
-        " const setter = Object.getOwnPropertyDescriptor("
-        "proto, 'value').set;"
-        " if (inputs.length >= 6) {"
-        "  // 6 individual digit boxes"
-        "  const digits = '" + code + "'.split('');"
-        "  for (let j = 0; j < 6 && j < inputs.length; j++) {"
-        "   setter.call(inputs[j], digits[j]);"
-        "   inputs[j].dispatchEvent(new Event('input',"
-        "{bubbles: true}));"
-        "   inputs[j].dispatchEvent(new Event('change',"
-        "{bubbles: true}));"
-        "  }"
-        "  return 'entered-digits';"
-        " } else {"
-        "  // single text field"
-        "  setter.call(inputs[0], '" + code + "');"
-        "  inputs[0].dispatchEvent(new Event('input',"
-        "{bubbles: true}));"
-        "  inputs[0].dispatchEvent(new Event('change',"
-        "{bubbles: true}));"
-        "  return 'entered-single';"
-        " }"
-        "})()"
-    )
-    entered = str(cdp.eval_js(js_enter))
-    print(f"  [2FA] enter: {entered}", flush=True)
-    if "no-input" in entered:
-        return False
+    # Enter code into 6 digit boxes — simple, no concatenation issues
+    enter_js = "document.querySelectorAll('input').length"
+    n_inputs = cdp.eval_js(enter_js)
+    print(f"  [2FA] inputs on page: {n_inputs}", flush=True)
+
+    if n_inputs and int(n_inputs) >= 6:
+        # 6 individual digit boxes
+        for idx in range(min(6, int(n_inputs))):
+            digit = code[idx] if idx < len(code) else ""
+            cdp.eval_js(
+                f"(() => {{ const i = document.querySelectorAll('input')[{idx}];"
+                f" const proto = HTMLInputElement.prototype;"
+                f" Object.getOwnPropertyDescriptor(proto, 'value')"
+                f".set.call(i, '{digit}');"
+                f" i.dispatchEvent(new Event('input', {{bubbles: true}}));"
+                f" i.dispatchEvent(new Event('change', {{bubbles: true}})); }})()"
+            )
+            time.sleep(0.2)
+        print(f"  [2FA] entered {code} digit-by-digit", flush=True)
+    else:
+        # Single text field
+        cdp.eval_js(
+            f"(() => {{ const i = document.querySelector('input');"
+            f" if (!i) return 'no-input';"
+            f" const proto = HTMLInputElement.prototype;"
+            f" Object.getOwnPropertyDescriptor(proto, 'value')"
+            f".set.call(i, '{code}');"
+            f" i.dispatchEvent(new Event('input', {{bubbles: true}}));"
+            f" i.dispatchEvent(new Event('change', {{bubbles: true}})); }})()"
+        )
+        print(f"  [2FA] entered {code} in single field", flush=True)
 
     # Submit
     time.sleep(1)
