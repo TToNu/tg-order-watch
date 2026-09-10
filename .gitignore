@@ -23,3 +23,4 @@ prices/
 flip_run.log 
 scripts/bought_item.json 
 monitor_run.log 
+scripts/lzt_proxy.json

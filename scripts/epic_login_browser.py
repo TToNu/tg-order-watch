@@ -29,7 +29,7 @@ from lzt import api_call
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 PORT = 9333
 BRIDGE_PORT = 9340
-PROXY_UPSTREAM = "socks5://iZv57jYf:GiQ4H1jE6X@151.242.178.178:50101"
+PROXY_UPSTREAM = "http://10.6.7.1:40000"
 # Epic throws a hard security checkpoint at datacenter IPs — direct home
 # connection passes Turnstile silently. Set EPIC_NOPROXY=1 to skip the proxy.
 import os
@@ -148,15 +148,18 @@ def run(headless: bool = True) -> tuple[list[dict], bool]:
              f"--user-data-dir={profile}", "--no-first-run",
              "--window-size=1100,800"]
     if USE_PROXY:
-        from http_socks_bridge import HttpToSocksBridge
-        scheme, rest = PROXY_UPSTREAM.split("://", 1)
-        creds, _, hostport = rest.rpartition("@")
-        user, _, pwd = creds.partition(":")
-        host, _, port = hostport.rpartition(":")
-        bridge = HttpToSocksBridge(host, int(port), user, pwd, BRIDGE_PORT)
-        bridge.start()
-        time.sleep(1)
-        flags.append(f"--proxy-server=http://127.0.0.1:{BRIDGE_PORT}")
+        if PROXY_UPSTREAM.startswith("http"):
+            flags.append(f"--proxy-server={PROXY_UPSTREAM}")
+        else:
+            from http_socks_bridge import HttpToSocksBridge
+            scheme, rest = PROXY_UPSTREAM.split("://", 1)
+            creds, _, hostport = rest.rpartition("@")
+            user, _, pwd = creds.partition(":")
+            host, _, port = hostport.rpartition(":")
+            bridge = HttpToSocksBridge(host, int(port), user, pwd, BRIDGE_PORT)
+            bridge.start()
+            time.sleep(1)
+            flags.append(f"--proxy-server=http://127.0.0.1:{BRIDGE_PORT}")
     if headless:
         flags.append("--headless=new")
     else:

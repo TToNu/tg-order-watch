@@ -30,8 +30,18 @@ API = "https://api.lzt.market"
 
 
 def _proxy_args() -> list[str]:
+    """Market transport proxy: dedicated lzt_proxy.json ({url}) if present,
+    else the socks5 block from config.json."""
+    dedicated = Path(__file__).with_name("lzt_proxy.json")
+    if dedicated.exists():
+        url = json.loads(dedicated.read_text(encoding="utf-8")).get("url", "")
+        if url.startswith("http"):
+            return ["-x", url]
+        if url.startswith("socks5"):
+            return ["--socks5-hostname", url[len("socks5://"):]]
+        return []
     cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
-    p = cfg["proxy"]
+    p = cfg.get("proxy", {})
     if p.get("proto") != "socks5" and not p.get("host"):
         return []
     return ["--socks5-hostname", f"{p['user']}:{p['pass']}@{p['host']}:{p['port']}"]
