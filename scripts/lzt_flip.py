@@ -6,7 +6,20 @@ NEVER matches against: descriptions, titles, hashes, URLs, raw text.
 """
 
 import re
+import json
 from pathlib import Path
+
+STATE = Path(__file__).with_name(".flip_seen.json")
+
+
+def load_seen() -> set:
+    if STATE.exists():
+        return set(json.loads(STATE.read_text()))
+    return set()
+
+
+def save_seen(seen: set) -> None:
+    STATE.write_text(json.dumps(list(seen))[-200000:], encoding="utf-8")
 
 DBD_RE = re.compile(r"(dead\s*by\s*day\s*light|\bdbd\b|\bdaylight\b|\bдбд\b)",
                      re.I)
