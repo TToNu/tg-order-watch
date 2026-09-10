@@ -134,14 +134,27 @@ def get_creds(item_id: int | None) -> tuple[str, str, int | None]:
 def login_steps(cdp, email: str, password: str) -> bool:
     js = SET_INPUTS.replace("EMAIL", json.dumps(email)) \
                    .replace("PASSWORD", json.dumps(password))
-    for step in range(6):
-        result = str(cdp.eval_js(js, await_promise=True))
+    for step in range(10):
+        # Handle 2FA setup interstitial: skip it to get to the account
+        body = str(cdp.eval_js("document.body.innerText.slice(0,300)"))
         url = str(cdp.eval_js("location.href"))
+        if "/mfa/" in url or "двухфакторн" in body.lower() \
+                or "2fa" in body.lower():
+            skip = str(cdp.eval_js(
+                "(() => { const btns = [...document.querySelectorAll('button,a')"
+                ",*')].filter(b => /позже|пропустить|skip|later|not now|не сейчас/i"
+                ".test(b.innerText || b.title || ''));"
+                "if (btns.length) { btns[0].click(); return 'clicked:' +"
+                " btns[0].innerText.slice(0,20); } return 'no-skip-btn'; })()"))
+            print(f"  2FA page: {skip}", flush=True)
+            if "no-skip" not in skip:
+                time.sleep(3)
+                continue
+        result = str(cdp.eval_js(js, await_promise=True))
         print(f"  step {step}: {result} | {url}", flush=True)
-        if "/id/login" not in url:
+        if "/id/login" not in url and "/mfa/" not in url:
             return True
         if "no-inputs" in result:
-            body = str(cdp.eval_js("document.body.innerText.slice(0,300)"))
             print("  body:", body.replace("\n", " ")[:200])
         time.sleep(4)
     return False
