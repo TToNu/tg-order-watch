@@ -174,6 +174,56 @@ def login_steps(cdp, email: str, password: str,
     return False
 
 
+def unlink_social_club(cdp) -> tuple[bool, str]:
+    """Navigate to Epic connections and unlink Rockstar Social Club.
+    Returns (was_unlinked, status). Increases GTA V resale value by ~50₽."""
+    print("  [SC] checking connections...", flush=True)
+    cdp.call("Page.navigate",
+             {"url": "https://www.epicgames.com/account/connections"})
+    time.sleep(8)
+    body = str(cdp.eval_js("document.body.innerText"))
+
+    if "rockstar" not in body.lower() and "social club" not in body.lower():
+        return False, "not-linked"
+
+    # Find Disconnect button in the Rockstar section
+    result = str(cdp.eval_js("""
+        (() => {
+            const sections = [...document.querySelectorAll(
+                'div,section,article,li')];
+            const rs = sections.find(el => {
+                const t = (el.innerText || '').toLowerCase();
+                return (t.includes('rockstar') || t.includes('social club'))
+                    && t.includes('disconnect');
+            });
+            if (!rs) return 'no-disconnect-visible';
+            const btn = [...rs.querySelectorAll('button,a')].find(b =>
+                /disconnect|отключить/i.test(b.innerText || ''));
+            if (btn) { btn.click(); return 'clicked'; }
+            return 'no-btn';
+        })()"""))
+    print(f"  [SC] {result}", flush=True)
+
+    if "clicked" not in result:
+        return False, result
+
+    # Handle confirmation dialog
+    time.sleep(3)
+    confirm = str(cdp.eval_js("""
+        (() => {
+            const btns = [...document.querySelectorAll(
+                'button,[role=button],a.btn')];
+            const yes = btns.find(b =>
+                /yes|да|confirm|подтвердить|unlink|отвязать|remove/i
+                .test(b.innerText || ''));
+            if (yes) { yes.click(); return 'confirmed'; }
+            return 'no-confirm-needed';
+        })()"""))
+    print(f"  [SC] confirm: {confirm}", flush=True)
+    time.sleep(3)
+    return True, f"unlinked ({result}, {confirm})"
+
+
 def disable_2fa(cdp) -> bool:
     """Navigate to account security settings and disable 2FA if enabled."""
     print("  [2FA-off] navigating to security settings...", flush=True)
@@ -382,10 +432,18 @@ def run(headless: bool = True) -> tuple[list[dict], bool]:
             time.sleep(1)
         ok = login_steps(cdp, email, password, email_pass)
 
-        # CRITICAL: disable 2FA before collecting cookies — otherwise
-        # the market's checker can't verify the account
+        # Post-login actions: disable 2FA + unlink Social Club
+        sc_unlinked = False
         if ok:
+            # Disable 2FA (prevents market checker failures)
             disable_2fa(cdp)
+            # Unlink Rockstar Social Club (increases GTA V value +50₽)
+            sc_unlinked, sc_status = unlink_social_club(cdp)
+            if sc_unlinked:
+                print(f"  [SC] SUCCESS: {sc_status}", flush=True)
+                # Marker for relist_direct to use premium pricing
+                (HERE / f"sc_free_{iid}.marker").write_text(
+                    "unlinked", encoding="utf-8")
 
         raw = []
         for _ in range(10):

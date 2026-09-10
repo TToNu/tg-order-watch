@@ -24,6 +24,13 @@ def main() -> None:
     price = int(sys.argv[2]) if len(sys.argv) > 2 else 45
     title = sys.argv[3] if len(sys.argv) > 3 else "EA SPORTS FC 26"
 
+    # Check if SC was unlinked (marker file from harvester)
+    sc_free = (HERE / f"sc_free_{iid}.marker").exists()
+    if sc_free and "GTA" in title.upper():
+        title = "GTA V | Social Club FREE | Полный доступ"
+        price = max(price, 200)  # SC-free accounts sell for more
+        print(f"[SC-free] premium listing: {title} at {price}₽")
+
     # Get item data
     item = curl_json("GET", f"{API}/{iid}").get("item", {})
     login = item.get("loginData") or {}
