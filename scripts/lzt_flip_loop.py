@@ -74,10 +74,11 @@ def log(line: str) -> None:
 
 
 def notify(text: str, important: bool = True) -> None:
-    """Telegram alert. Routine steps (buy attempts, discount asks, relists)
-    are log-only; important = sales, first-flip report, problems."""
-    if not important:
-        return
+    """Telegram alert + local file backup (alerts.log)."""
+    if important:
+        alerts = BASE / "alerts.log"
+        with alerts.open("a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now().isoformat(timespec='seconds')} {text}\n")
     deadline = time.time() + 30
     while CMDS.exists() and time.time() < deadline:
         time.sleep(1)
