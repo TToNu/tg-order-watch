@@ -197,6 +197,61 @@ def hour_discount_budget(st: dict) -> bool:
     return st["discounts_sent_hour"] < DISCOUNTS_PER_HOUR
 
 
+def verify_games(item: dict, expected_game: str) -> tuple[str, bool, str]:
+    """Post-purchase audit: read the REAL game list from the item's parsed
+    eg_games/fortniteTransactions data and verify the expected game is
+    actually present. Prevents hash-substring false positives.
+
+    Returns (verified_game_name, matches_expected, detail_line).
+    """
+    from lzt_flip import GAME_TARGETS
+    titles: set[str] = set()
+
+    def extract(node) -> None:
+        if isinstance(node, dict):
+            t = node.get("title")
+            if isinstance(t, str) and len(t) > 2 and t != "None":
+                titles.add(t)
+            for v in node.values():
+                extract(v)
+        elif isinstance(node, list):
+            for v in node:
+                extract(v)
+
+    extract(item.get("eg_games") or {})
+    for tr in item.get("fortniteTransactions") or []:
+        t = tr.get("title")
+        if isinstance(t, str) and t != "None":
+            titles.add(t)
+
+    if not titles:
+        return expected_game, True, "no game data to verify (trusted)"
+
+    # Which portfolio games are actually on this account?
+    found: list[str] = []
+    for game_name, rx in GAME_TARGETS:
+        for title in titles:
+            if rx.search(title):
+                found.append(game_name)
+                break
+
+    detail = f"games found: {found or 'none'}; titles sample: {sorted(titles)[:6]}"
+
+    if expected_game in found:
+        return expected_game, True, f"VERIFIED {expected_game}: {detail}"
+
+    if found:
+        # relist under the most valuable game actually present
+        for game_name, _ in GAME_TARGETS:
+            if game_name in found:
+                return game_name, False, \
+                    f"MISMATCH: expected {expected_game}, got {game_name}: {detail}"
+
+    # No portfolio games at all — describe honestly as a bundle
+    return f"Epic Games | {len(titles)} игр", False, \
+        f"MISMATCH: expected {expected_game}, no portfolio game: {detail}"
+
+
 def max_payable(target: float, game: str = "") -> float:
     """Highest buy price that keeps both >= MIN_MARGIN profit and >= 1.5x ROI.
     Some games carry extra resale risk (GTA V SC disputes) — capped lower."""
@@ -262,6 +317,13 @@ def check_pending_discounts(st: dict) -> None:
         if owned:  # we own it (auto-buy fired on accepted discount)
             log(f"[discount] ACCEPTED & bought {iid} [{row['game']}] "
                 f"за {row['requested']}₽")
+            # POST-PURCHASE AUDIT
+            v_game, v_match, v_detail = verify_games(item, row["game"])
+            log(f"[audit] {iid}: {v_detail}")
+            if not v_match:
+                notify(f"⚠️ Аудит: ожидали [{row['game']}], "
+                       f"на аккаунте [{v_game}]. Выкладываю честно.")
+                row["game"] = v_game
             notify(f"🟢 Куплено со скидкой: {iid} [{row['game']}] "
                    f"за {row['requested']}₽ (просили у {row.get('price')}₽)")
             ok, info = relist({"item": item}, row["requested"], row["game"])
@@ -407,6 +469,17 @@ def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
     st["bought_ids"].append(it["item_id"])
     save_state(st)
     log(f"[buy] OK {it['item_id']} [{game}]")
+
+    # POST-PURCHASE AUDIT: verify the game is actually on the account
+    bought_item = bought.get("item", bought)
+    verified_game, matches, audit_detail = verify_games(bought_item, game)
+    log(f"[audit] {it['item_id']}: {audit_detail}")
+    if not matches:
+        notify(f"⚠️ Аудит: ожидали [{game}], на аккаунте [{verified_game}]. "
+               f"Выкладываю честно.")
+        game = verified_game  # relist under the real content
+        price = float(bought_item.get("price", price))  # keep original
+
     notify(f"🟢 Куплено: {it['item_id']} [{game}] за {price}₽")
     ok, info = relist(bought, price, game)
     if ok:
