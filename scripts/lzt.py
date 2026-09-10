@@ -37,16 +37,22 @@ def _proxy_args() -> list[str]:
     return ["--socks5-hostname", f"{p['user']}:{p['pass']}@{p['host']}:{p['port']}"]
 
 
+_proxy_fails = 0
+_proxy_skip_until = 0.0
+
+
 def http(method: str, url: str, params: dict | None = None,
          data: str | None = None, proxy: bool = True) -> tuple[int, str]:
-    """One HTTP round-trip via curl. The India SOCKS5 has a narrow channel:
-    small payloads pass, large search responses stall — so on proxy failure
-    we transparently retry direct (reads are IP-agnostic for API tokens)."""
+    """One HTTP round-trip via curl. Adaptive transport: the India SOCKS5
+    stalls in waves; after 3 consecutive stalls it is skipped for 10 minutes
+    so cycles stay fast on the direct fallback."""
+    global _proxy_fails, _proxy_skip_until
+    import time as _time
     if params:
         from urllib.parse import urlencode
         url = f"{url}?{urlencode(params)}"
     token = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))["token"]
-    base = ["curl", "-s", "-m", "35", "-X", method,
+    base = ["curl", "-s", "-m", "12", "-X", method,
             "-H", f"Authorization: Bearer {token}",
             "-H", f"User-Agent: {UA}",
             "-b", str(COOKIE_JAR), "-c", str(COOKIE_JAR),
@@ -63,11 +69,18 @@ def http(method: str, url: str, params: dict | None = None,
         body, _, code = out.rpartition("__HTTP__")
         return int(code.strip()), body.strip()
 
-    if proxy:
+    if proxy and _time.time() >= _proxy_skip_until:
         code, body = run(_proxy_args())
         if code > 0:
+            _proxy_fails = 0
             return code, body
-        print("[transport] proxy stalled, retrying direct", file=sys.stderr)
+        _proxy_fails += 1
+        print(f"[transport] proxy stalled ({_proxy_fails})", file=sys.stderr)
+        if _proxy_fails >= 3:
+            _proxy_skip_until = _time.time() + 600
+            _proxy_fails = 0
+            print("[transport] proxy disabled for 10 min, direct mode",
+                  file=sys.stderr)
     for attempt in range(3):
         code, body = run([])
         if code > 0:

@@ -241,9 +241,15 @@ def check_pending_discounts(st: dict) -> None:
             continue
         item = res.get("item", res)
         login = item.get("loginData") or {}
-        if login.get("login"):  # we own it now (buyer sees credentials)
+        buyer = (item.get("buyer") or {}) or {}
+        owned = (item.get("item_state") == "paid"
+                 or buyer.get("user_id") == 10297413
+                 or bool(login.get("login")))
+        if owned:  # we own it (auto-buy fired on accepted discount)
             log(f"[discount] ACCEPTED & bought {iid} [{row['game']}] "
                 f"за {row['requested']}₽")
+            notify(f"🟢 Куплено со скидкой: {iid} [{row['game']}] "
+                   f"за {row['requested']}₽ (просили у {row.get('price')}₽)")
             ok, info = relist({"item": item}, row["requested"], row["game"])
             if ok:
                 st["spent"] += row["requested"]
@@ -253,9 +259,12 @@ def check_pending_discounts(st: dict) -> None:
                     "game": row["game"], "link": info.split(" ")[0],
                     "ts": row["ts"]})
                 log(f"[sell] OK {iid} -> {info}")
+                notify(f"✅ Выставлено: {info} [{row['game']}] "
+                       f"(куплено за {row['requested']}₽)")
             else:
-                notify(f"🟠 Купил {iid} со скидкой, перевыкладка не вышла: "
-                       f"{info}")
+                log(f"[discount] relist FAIL {iid}: {info}")
+                st["bought_ids"].append(iid)
+                queue_relist(iid, row["requested"], row["game"])
             continue
         if age_h > 24:
             log(f"[discount] expired {iid}")
@@ -384,6 +393,7 @@ def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
     st["bought_ids"].append(it["item_id"])
     save_state(st)
     log(f"[buy] OK {it['item_id']} [{game}]")
+    notify(f"🟢 Куплено: {it['item_id']} [{game}] за {price}₽")
     ok, info = relist(bought, price, game)
     if ok:
         log(f"[sell] OK {it['item_id']} [{game}] -> {info}")
@@ -394,6 +404,7 @@ def try_buy(it: dict, ev: str, st: dict, game: str) -> None:
             "ts": datetime.now().isoformat(timespec="seconds"),
         })
         save_state(st)
+        notify(f"✅ Выставлено: {info} [{game}] (куплено за {price}₽)")
     else:
         log(f"[sell] FAIL {it['item_id']}: {info}")
         queue_relist(it["item_id"], price, game)
@@ -496,6 +507,39 @@ def harvest_epic_cookies(item_id: int) -> bool:
         f"epic_cookies_{item_id}.json")).exists()
 
 
+def fetch_paid_emails() -> dict[int, str]:
+    """Bulk-download credentials of our paid orders (the discount auto-buy
+    path never shows email data on the item card). Returns {item_id:
+    'email:password'}."""
+    cache_file = Path(__file__).with_name("item_emails.json")
+    cache = {}
+    if cache_file.exists():
+        try:
+            cache = {int(k): v for k, v in
+                     json.loads(cache_file.read_text(encoding="utf-8")).items()}
+        except ValueError:
+            cache = {}
+    try:
+        raw = api_call("GET", "/user/orders/download",
+                       {"show": "paid", "format": "custom",
+                        "custom_format":
+                            "{item_id}|{login}|{password}|{email_login_data}|"
+                            "{title}"})
+    except RuntimeError as e:
+        log(f"[emails] download failed: {str(e)[:120]}")
+        return cache
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    for ln in text.splitlines():
+        parts = ln.split("|")
+        if len(parts) >= 4 and parts[0].strip().isdigit():
+            iid = int(parts[0])
+            email_raw = parts[3].strip()
+            if email_raw and ":" in email_raw:
+                cache[iid] = email_raw
+    cache_file.write_text(json.dumps(cache), encoding="utf-8")
+    return cache
+
+
 def relist_with_cookies(item_id: int, price: float, game: str) -> tuple[bool, str]:
     """Relist using freshly harvested Epic session cookies."""
     cookies_file = Path(__file__).with_name(f"epic_cookies_{item_id}.json")
@@ -504,6 +548,11 @@ def relist_with_cookies(item_id: int, price: float, game: str) -> tuple[bool, st
     item = res.get("item", res)
     login = item.get("loginData") or {}
     email = item.get("emailLoginData") or {}
+    if not email.get("login"):
+        creds = fetch_paid_emails().get(item_id, "")
+        if creds:
+            email = {"login": creds.split(":", 1)[0],
+                     "password": creds.split(":", 1)[1]}
     floor, target, med = resale_stats(game)
     body = {
         "title": game, "title_en": game, "price": max(1.0, target),
@@ -541,8 +590,10 @@ def check_pending_relists(st: dict) -> None:
             ok, info = relist({"item": item}, row["price"], row["game"])
         except RuntimeError as e:
             ok, info = False, str(e)[:200]
-        if not ok and "cookie" in info.lower():
-            log(f"[relist-queue] {iid}: cookie demand -> harvesting session")
+        if not ok and ("cookie" in info.lower()
+                       or "почте" in info or "почт" in info):
+            log(f"[relist-queue] {iid}: needs cookies/email -> "
+                f"harvest + paid-orders creds")
             if harvest_epic_cookies(iid):
                 ok, info = relist_with_cookies(iid, row["price"], row["game"])
                 log(f"[relist-queue] cookie relist {iid}: ok={ok} {info}")
